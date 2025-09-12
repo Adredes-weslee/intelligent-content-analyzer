@@ -1,0 +1,54 @@
+version: "3.8"
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  ingest:
+    build: ../services/ingest
+    environment:
+      - CACHE_ENABLED=false
+    depends_on:
+      - redis
+    ports:
+      - "8001:8000"
+
+  embeddings:
+    build: ../services/embeddings
+    depends_on:
+      - redis
+    ports:
+      - "8002:8000"
+
+  retrieval:
+    build: ../services/retrieval
+    depends_on:
+      - redis
+    ports:
+      - "8003:8000"
+
+  llm_generate:
+    build: ../services/llm-generate
+    depends_on:
+      - redis
+    ports:
+      - "8004:8000"
+
+  evaluation:
+    build: ../services/evaluation
+    depends_on:
+      - redis
+    ports:
+      - "8005:8000"
+
+  api_gateway:
+    build: ../services/api-gateway
+    depends_on:
+      - ingest
+      - retrieval
+      - llm_generate
+      - evaluation
+    ports:
+      - "8000:8000"
