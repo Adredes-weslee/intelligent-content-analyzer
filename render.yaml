@@ -3,14 +3,14 @@ services:
     name: redis
     plan: free
     ipAllowList:
-      - source: 0.0.0.0/0  # keep open; tighten later if desired
+      - source: 0.0.0.0/0  
 
   - type: web
     name: ingest
-    env: docker
+    runtime: docker
     dockerfilePath: services/ingest/Dockerfile
     plan: free
-    # healthCheckPath: /
+    healthCheckPath: /health
     envVars:
       - key: REDIS_URL
         fromService: { type: redis, name: redis, property: connectionString }
@@ -25,10 +25,10 @@ services:
 
   - type: web
     name: embeddings
-    env: docker
+    runtime: docker
     dockerfilePath: services/embeddings/Dockerfile
     plan: free
-    # healthCheckPath: /
+    healthCheckPath: /health
     envVars:
       - key: REDIS_URL
         fromService: { type: redis, name: redis, property: connectionString }
@@ -42,13 +42,17 @@ services:
         sync: false
       - key: LANGFUSE_TRACING_ENVIRONMENT
         value: render
+      - key: HF_HOME
+        value: /app/data/.cache/huggingface
+      - key: TRANSFORMERS_CACHE
+        value: /app/data/.cache/huggingface/transformers
 
   - type: web
     name: retrieval
-    env: docker
+    runtime: docker
     dockerfilePath: services/retrieval/Dockerfile
-    plan: starter         # disks not supported on free
-    # healthCheckPath: /
+    plan: starter         
+    healthCheckPath: /health
     disk:
       name: faiss-data
       mountPath: /app/data
@@ -83,10 +87,10 @@ services:
 
   - type: web
     name: llm-generate
-    env: docker
+    runtime: docker
     dockerfilePath: services/llm_generate/Dockerfile
     plan: free
-    # healthCheckPath: /
+    healthCheckPath: /health
     envVars:
       - key: REDIS_URL
         fromService: { type: redis, name: redis, property: connectionString }
@@ -103,10 +107,10 @@ services:
 
   - type: web
     name: evaluation
-    env: docker
+    runtime: docker
     dockerfilePath: services/evaluation/Dockerfile
     plan: free
-    # healthCheckPath: /
+    healthCheckPath: /health
     envVars:
       - key: REDIS_URL
         fromService: { type: redis, name: redis, property: connectionString }
@@ -123,15 +127,14 @@ services:
 
   - type: web
     name: api-gateway
-    env: docker
+    runtime: docker
     dockerfilePath: services/api_gateway/Dockerfile
     plan: free
-    # healthCheckPath: /
+    healthCheckPath: /health
     envVars:
       - key: REDIS_URL
         fromService: { type: redis, name: redis, property: connectionString }
 
-      # Set these manually after first deploy (cannot use property: url in Blueprint)
       - key: INGEST_URL
         sync: false
       - key: RETRIEVAL_URL

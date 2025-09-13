@@ -12,6 +12,7 @@ requests to the other services.
 
 from __future__ import annotations
 
+import glob
 import json
 import os
 from pathlib import Path
@@ -145,3 +146,22 @@ async def _log_upstreams() -> None:
         ).rstrip("/"),
     }
     print(f"[api-gateway] Upstream services: {upstreams}")
+
+
+@app.get("/debug/storage")
+def debug_storage():
+    idx = os.getenv("FAISS_INDEX_PATH", "/app/data/faiss.index")
+    doc = os.getenv("DOC_MAP_PATH", "/app/data/doc_map.json")
+    base = "/app/data"
+    return {
+        "cwd": os.getcwd(),
+        "faiss_index_path": idx,
+        "doc_map_path": doc,
+        "exists": {
+            "faiss.index": os.path.exists(idx),
+            "doc_map.json": os.path.exists(doc),
+        },
+        "data_dir_listing": sorted(
+            [os.path.basename(p) for p in glob.glob(base + "/*")]
+        ),
+    }
