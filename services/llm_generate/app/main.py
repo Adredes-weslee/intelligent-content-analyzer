@@ -37,7 +37,6 @@ Env/Settings keys used:
 from __future__ import annotations
 
 import json
-import os
 from typing import List
 
 from fastapi import FastAPI
@@ -58,7 +57,7 @@ from .prompts import GENERATOR_SYSTEM_PROMPT, ROUTER_PROMPT, SUMMARIZER_SYSTEM_P
 app = FastAPI(title="LLM Generation Service", version="0.2.0")
 s = Settings()
 
-_GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+_GEMINI_API_KEY = s.gemini_api_key
 
 genai = None
 if _GEMINI_API_KEY and not s.offline_mode:
@@ -76,13 +75,10 @@ def _route_model(question: str) -> dict:
     if genai is None:
         return default
     try:
-        router = genai.GenerativeModel(s.gemini_fast_model)
-        resp = router.generate_content(
-            [
-                {"role": "system", "parts": [{"text": ROUTER_PROMPT}]},
-                {"role": "user", "parts": [{"text": question}]},
-            ]
+        router = genai.GenerativeModel(
+            s.gemini_fast_model, system_instruction=ROUTER_PROMPT
         )
+        resp = router.generate_content(question)
         text = getattr(resp, "text", "") or ""
         start, end = text.find("{"), text.rfind("}")
         data = {}
@@ -185,7 +181,9 @@ async def generate_answer(request: GenerateRequest | QARequest) -> QAResponse:
     route = _route_model(q)
     chosen_model = route.get("model") or s.gemini_fast_model
     try:
-        model = genai.GenerativeModel(chosen_model)
+        model = genai.GenerativeModel(
+            chosen_model, system_instruction=GENERATOR_SYSTEM_PROMPT
+        )
         corr = getattr(request, "correlation_id", None)
         with span(
             "llm.generate.call",
@@ -193,12 +191,8 @@ async def generate_answer(request: GenerateRequest | QARequest) -> QAResponse:
             prompt_tokens=estimate_tokens(user_prompt),
             corr=corr,
         ):
-            resp = model.generate_content(
-                [
-                    {"role": "system", "parts": [{"text": system}]},
-                    {"role": "user", "parts": [{"text": user_prompt}]},
-                ]
-            )
+            # Send only a user message (or plain string)
+            resp = model.generate_content(user_prompt)
         text = resp.text if hasattr(resp, "text") else None
         if text:
             start = text.find("{")
@@ -272,8 +266,14 @@ async def generate_answer(request: GenerateRequest | QARequest) -> QAResponse:
                 correlation_id=corr,
             )
             return out
-    except Exception:
-        pass
+    except Exception as e:
+        # Immediate fallback with error details
+        return QAResponse(
+            answer="[fallback] Generation error.",
+            citations=[],
+            confidence=0.0,
+            diagnostics={"reason": "fallback", "error": str(e), "model": chosen_model},
+        )
 
     # Final fallback
     q = getattr(request, "question", "")
@@ -302,6 +302,7 @@ async def summarize_document(request: SummarizeRequest) -> SummarizeResponse:
                 )
             )
         return SummarizeResponse(
+            doc_id=request.doc_id,
             summary=summary,
             key_points=[] if not text else [text[:80] + "..."],
             citations=citations,
@@ -323,24 +324,15 @@ async def summarize_document(request: SummarizeRequest) -> SummarizeResponse:
         context_str = "\n\n".join([getattr(c, "text", "") for c in chunks])
 
     try:
-        model = genai.GenerativeModel(s.gemini_fast_model)
-        resp = model.generate_content(
-            [
-                {"role": "system", "parts": [{"text": SUMMARIZER_SYSTEM_PROMPT}]},
-                {
-                    "role": "user",
-                    "parts": [
-                        {
-                            "text": (
-                                "Summarize the following chunks. "
-                                "Return JSON as instructed in the system prompt.\n\n"
-                                f"{context_str}"
-                            )
-                        }
-                    ],
-                },
-            ]
+        model = genai.GenerativeModel(
+            s.gemini_fast_model, system_instruction=SUMMARIZER_SYSTEM_PROMPT
         )
+        user_prompt = (
+            "Summarize the following chunks. "
+            "Return JSON as instructed in the system prompt.\n\n"
+            f"{context_str}"
+        )
+        resp = model.generate_content(user_prompt)
         text = resp.text if hasattr(resp, "text") else None
         if text:
             start = text.find("{")
@@ -369,16 +361,28 @@ async def summarize_document(request: SummarizeRequest) -> SummarizeResponse:
                 except Exception:
                     continue
             return SummarizeResponse(
+                doc_id=request.doc_id,
                 summary=summary,
                 key_points=key_points if isinstance(key_points, list) else [],
                 citations=citations,
                 diagnostics={"provider": "gemini", "model": s.gemini_fast_model},
             )
-    except Exception:
-        pass
+    except Exception as e:
+        return SummarizeResponse(
+            doc_id=request.doc_id,
+            summary="Unable to summarize at this time.",
+            key_points=[],
+            citations=[],
+            diagnostics={
+                "reason": "fallback",
+                "error": str(e),
+                "model": s.gemini_fast_model,
+            },
+        )
 
     # Fallback
     return SummarizeResponse(
+        doc_id=request.doc_id,
         summary="Unable to summarize at this time.",
         key_points=[],
         citations=[],
