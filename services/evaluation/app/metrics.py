@@ -9,7 +9,7 @@ and retrieval precision/recall calculations.
 
 from __future__ import annotations
 
-from typing import List, Tuple
+from typing import Iterable, List, Tuple
 
 from shared.models import DocChunk
 
@@ -42,3 +42,74 @@ def simple_metric_scores(
     # Completeness: 1 if answer is non-empty, else 0
     completeness = 1.0 if ans_lower.strip() else 0.0
     return factuality, relevance, completeness
+
+
+def _sentences(text: str) -> List[str]:
+    """Very naive sentence splitter to keep dependencies light."""
+    parts = []
+    for sep in [". ", "? ", "! "]:
+        if sep in text:
+            # progressively split by separators
+            if not parts:
+                parts = text.split(sep)
+            else:
+                _tmp: List[str] = []
+                for p in parts:
+                    _tmp.extend(p.split(sep))
+                parts = _tmp
+    return [p.strip().strip(".?!") for p in (parts or [text]) if p.strip()]
+
+
+def heuristic_faithfulness(answer: str, sources: List[DocChunk]) -> float:
+    """Estimate faithfulness as fraction of answer sentences whose keywords appear in sources.
+
+    This is a crude proxy: for each sentence, build a set of lowercase tokens and
+    check if at least half of the tokens appear in the concatenated sources.
+    Returns a value in [0,1].
+    """
+    sents = _sentences(answer)
+    if not sents:
+        return 0.0
+    combined = " ".join(c.text.lower() for c in sources)
+    combined_terms = set(combined.split())
+    supported = 0
+    for s in sents:
+        terms = [t for t in s.lower().split() if len(t) > 2]
+        if not terms:
+            continue
+        overlap = sum(1 for t in terms if t in combined_terms)
+        if overlap >= max(1, len(terms) // 2):
+            supported += 1
+    return supported / max(1, len(sents))
+
+
+def heuristic_answer_relevance_1_5(question: str, answer: str) -> float:
+    """Score how directly the answer addresses the question on a 1–5 scale.
+
+    Heuristic: compute token overlap ratio between question and answer; map to 1–5.
+    """
+    q = set(question.lower().split())
+    a = set(answer.lower().split())
+    if not a:
+        return 1.0
+    overlap = len(q & a) / max(1, len(q))
+    # Map overlap in [0,1] to [1,5]
+    return 1.0 + 4.0 * max(0.0, min(1.0, overlap))
+
+
+def heuristic_context_relevance_ratio(question: str, hits: Iterable[DocChunk]) -> float:
+    """Estimate ratio of relevant chunks to the question.
+
+    Mark a chunk relevant if at least one question token appears in the chunk text.
+    Returns a value in [0,1].
+    """
+    q_terms = set(t for t in question.lower().split() if len(t) > 2)
+    hit_list = list(hits)
+    if not hit_list:
+        return 0.0
+    relevant = 0
+    for c in hit_list:
+        text = getattr(c, "text", "").lower()
+        if any(t in text for t in q_terms):
+            relevant += 1
+    return relevant / len(hit_list)
