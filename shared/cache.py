@@ -16,7 +16,6 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-import os
 import threading
 from typing import Any, Iterable, List, Optional, Tuple
 
@@ -61,6 +60,36 @@ class Cache:
                 # fall back to local store on error
                 pass
         self._local_store[key] = value
+
+
+INDEX_VERSION_KEY = "qa:index_version"
+
+
+def get_index_version() -> int:
+    """Return a monotonically increasing index version for cache namespacing."""
+    try:
+        cache = get_default_cache()
+        val = cache.get(INDEX_VERSION_KEY)
+        if val is None:
+            return 0
+        try:
+            return int(val if not isinstance(val, dict) else val.get("v", 0))
+        except Exception:
+            return 0
+    except Exception:
+        return 0
+
+
+def bump_index_version() -> int:
+    """Increment and persist the index version to invalidate QA caches."""
+    try:
+        cache = get_default_cache()
+        cur = get_index_version()
+        nxt = cur + 1
+        cache.set(INDEX_VERSION_KEY, nxt)
+        return nxt
+    except Exception:
+        return 0
 
 
 # --- Semantic cache helpers -------------------------------------------------
@@ -218,9 +247,9 @@ def get_default_cache() -> Cache:
         s = Settings()
         if not s.cache_enabled:
             return Cache(None)
-        url = os.getenv("REDIS_URL") or s.redis_url or None
+
+        url = s.redis_url or None
         return Cache(url)
     except Exception:
-        url = os.getenv("REDIS_URL") or os.getenv("CACHE_REDIS_URL")
-        enabled = os.getenv("CACHE_ENABLED", "true").lower() in ("1", "true", "yes")
-        return Cache(url if enabled else None)
+        # If Settings cannot be loaded, fall back to in-memory cache
+        return Cache(None)
