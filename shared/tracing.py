@@ -10,10 +10,14 @@ This module also exposes lightweight helpers for observability events
 (`log_event`) and crude token estimation (`estimate_tokens`).
 """
 
-import os
+import contextvars
 import time
 from contextlib import contextmanager
-from typing import Any, Iterator, Optional
+from typing import Any, Callable, Iterator, Optional
+
+from shared.settings import Settings
+
+_settings = Settings()
 
 try:
     from langfuse import Langfuse  # type: ignore
@@ -40,23 +44,24 @@ class _Span:
         return None
 
 
+_current_trace = contextvars.ContextVar("ica.current_trace", default=None)
+
+
 class Tracer:
     """Tracer facade with pluggable backends (no-op or Langfuse)."""
 
     def __init__(self) -> None:
-        self._backend = os.getenv("TRACING_BACKEND", "langfuse").lower()
-        self._enabled = os.getenv("LANGFUSE_ENABLED", "false").lower() in (
-            "1",
-            "true",
-            "yes",
-        )
+        self._backend = _settings.tracing_backend.lower()
+
+        # Use explicit OS env if set; otherwise use Settings (.env)
+        self._enabled = bool(_settings.langfuse_enabled)
+
         self._client = None
         if self._enabled and self._backend == "langfuse" and Langfuse is not None:
             try:
-                # Langfuse expects public/secret keys; we allow host override
-                public_key = os.getenv("LANGFUSE_PUBLIC_KEY")
-                secret_key = os.getenv("LANGFUSE_SECRET_KEY")
-                host = os.getenv("LANGFUSE_HOST")
+                public_key = _settings.langfuse_public_key
+                secret_key = _settings.langfuse_secret_key
+                host = _settings.langfuse_host
                 if public_key and secret_key:
                     self._client = Langfuse(
                         public_key=public_key, secret_key=secret_key, host=host
@@ -64,13 +69,77 @@ class Tracer:
             except Exception:
                 self._client = None
 
+    def start_trace(
+        self, name: str, input: Optional[dict] = None, user_id: Optional[str] = None
+    ):
+        if self._client is None:
+            return None
+        try:
+            tr = self._client.trace(name=name, input=input or {}, user_id=user_id)
+            _current_trace.set(tr)
+            return tr
+        except Exception:
+            return None
+
+    def end_trace(self, output: Optional[dict] = None):
+        tr = _current_trace.get()
+        if tr and hasattr(tr, "end"):
+            try:
+                tr.end(output=output or {})
+            except Exception:
+                pass
+        _current_trace.set(None)
+
     def start_span(self, name: str, **kwargs: Any) -> _Span:
         if self._client is None:
             return _Span(name, **kwargs)
+        # Prefer attaching spans to the current request trace if present
+        tr = _current_trace.get()
+        if tr is not None:
+            return _LangfuseSpan(self._client, name, parent_trace=tr, **kwargs)
         return _LangfuseSpan(self._client, name, **kwargs)
 
 
 tracer = Tracer()
+
+
+def install_fastapi_tracing(app, service_name: str = "ingest") -> None:
+    """Install middleware to auto-create a Langfuse trace per HTTP request."""
+    try:
+        from fastapi import Request
+    except Exception:
+        return  # FastAPI not installed
+
+    @app.middleware("http")
+    async def _trace_middleware(request: "Request", call_next: Callable):
+        # Build a concise input payload (avoid full headers/body for PII)
+        route = getattr(request.scope, "route", None)
+        route_path = getattr(route, "path", request.url.path)
+        tracer.start_trace(
+            name=f"{service_name} {request.method} {route_path}",
+            input={
+                "method": request.method,
+                "path": route_path,
+                "query": str(request.url.query) if request.url.query else "",
+            },
+        )
+        try:
+            with span("http.request"):
+                response = await call_next(request)
+            return response
+        except Exception as e:
+            # Record an error span; trace will end below
+            with span("http.error", error=str(e)):
+                pass
+            raise
+        finally:
+            tracer.end_trace(
+                output={
+                    "status": getattr(
+                        locals().get("response", None), "status_code", None
+                    )
+                }
+            )
 
 
 @contextmanager
@@ -90,23 +159,25 @@ def span(name: str, **kwargs: Any) -> Iterator[_Span]:
 
 
 class _LangfuseSpan(_Span):  # pragma: no cover - optional dependency
-    def __init__(self, client: Any, name: str, **kwargs: Any) -> None:
+    def __init__(
+        self, client: Any, name: str, parent_trace: Any | None = None, **kwargs: Any
+    ) -> None:
         super().__init__(name, **kwargs)
         self._client = client
         self._trace = None
+        # Use the current request trace if provided by Tracer.start_span
+        self._trace = parent_trace
         self._span = None
         self._start_ms = _now_ms()
         self._kwargs = kwargs
 
     def __enter__(self) -> "_LangfuseSpan":
         try:
-            # Create or reuse a single trace per process; fall back if unavailable
-            if hasattr(self._client, "trace"):
-                self._trace = self._client.trace(
-                    name=os.getenv("TRACE_NAME", "ica-trace")
-                )
-                if hasattr(self._trace, "span"):
-                    self._span = self._trace.span(name=self.name, input=self._kwargs)
+            # If no current request trace, create a lightweight one so span still records
+            if self._trace is None and hasattr(self._client, "trace"):
+                self._trace = self._client.trace(name=_settings.trace_name)
+            if self._trace is not None and hasattr(self._trace, "span"):
+                self._span = self._trace.span(name=self.name, input=self._kwargs)
             elif hasattr(self._client, "span"):
                 self._span = self._client.span(name=self.name, input=self._kwargs)
         except Exception:
