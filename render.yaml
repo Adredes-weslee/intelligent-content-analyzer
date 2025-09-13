@@ -2,6 +2,8 @@ services:
   - type: redis
     name: redis
     plan: free
+    ipAllowList:
+      - source: 0.0.0.0/0  # keep open; tighten later if desired
 
   - type: web
     name: ingest
@@ -45,7 +47,7 @@ services:
     name: retrieval
     env: docker
     dockerfilePath: services/retrieval/Dockerfile
-    plan: free
+    plan: starter         # disks not supported on free
     # healthCheckPath: /
     disk:
       name: faiss-data
@@ -128,16 +130,19 @@ services:
     envVars:
       - key: REDIS_URL
         fromService: { type: redis, name: redis, property: connectionString }
+
+      # Set these manually after first deploy (cannot use property: url in Blueprint)
       - key: INGEST_URL
-        fromService: { type: web, name: ingest, property: url }
+        sync: false
       - key: RETRIEVAL_URL
-        fromService: { type: web, name: retrieval, property: url }
+        sync: false
       - key: EMBEDDINGS_URL
-        fromService: { type: web, name: embeddings, property: url }
+        sync: false
       - key: LLM_GENERATE_URL
-        fromService: { type: web, name: llm-generate, property: url }
+        sync: false
       - key: EVALUATION_URL
-        fromService: { type: web, name: evaluation, property: url }
+        sync: false
+
       - key: STREAMLIT_APP_ORIGIN
         sync: false
       - key: LANGFUSE_HOST
