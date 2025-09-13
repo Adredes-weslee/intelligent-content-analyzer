@@ -10,17 +10,11 @@ Overview
                    dense similarity score and blends: score = 0.5*bm25 + 0.5*dense.
 
 Algorithms
-- BM25: lower-cased whitespace tokenization, IDF and length normalization.
+- BM25: normalized tokenization, IDF and length normalization.
 - Dense: embeddings via services.embeddings.app.embeddings.embed_texts;
          vectors are L2-normalized and compared with cosine similarity.
 - FAISS: if available (faiss_store.init_index() succeeded), dense lookup may be
          accelerated via FAISS; otherwise cosine is computed in Python.
-
-Use this vs hybrid.py
-- /search here is a lightweight hybrid that blends per-chunk scores.
-- For a stronger hybrid that unions top-N BM25 with top-N dense candidates
-  and merges via Reciprocal Rank Fusion (RRF) with diagnostics, use
-  services.retrieval.app.hybrid.hybrid_search from the API Gateway.
 
 Notes & limitations
 - No metadata filters/fielded search in this module.
@@ -31,7 +25,10 @@ Notes & limitations
 
 from __future__ import annotations
 
+import json
 import math
+import re
+from pathlib import Path
 from typing import Dict, List
 
 from fastapi import FastAPI
@@ -45,18 +42,32 @@ from shared.models import (
 )
 from shared.tracing import install_fastapi_tracing
 
-from .faiss_store import get_index_dim, init_index, upsert_vectors
+from .faiss_store import _DOC_MAP_PATH, get_index_dim, init_index, upsert_vectors
+from .faiss_store import search as faiss_search
 
 app = FastAPI(title="Retrieval Service", version="0.1.0")
 install_fastapi_tracing(app, service_name="retrieval")
+
 # In‑memory list of indexed chunks
 INDEX: List[DocChunk] = []
 # Parallel dense vectors and lookup by chunk id
 DENSE_VECTORS: List[List[float]] = []
 VEC_BY_CHUNK_ID: Dict[str, List[float]] = {}
+CHUNK_BY_ID: Dict[str, DocChunk] = {}  # id -> DocChunk
 
 # Initialize FAISS index (no-op if faiss not installed)
 init_index()
+
+
+# Debug/status endpoint
+@app.get("/_status")
+def _status():
+    return {
+        "indexed": len(INDEX),
+        "doc_map_path": str(_DOC_MAP_PATH),
+        "doc_map_exists": Path(_DOC_MAP_PATH).exists(),
+        "sample_ids": list(CHUNK_BY_ID.keys())[:5],
+    }
 
 
 def _l2_norm(v: List[float]) -> float:
@@ -72,6 +83,11 @@ def _cosine(a: List[float], b: List[float]) -> float:
     if not a or not b or len(a) != len(b):
         return 0.0
     return sum(x * y for x, y in zip(a, b))
+
+
+def _tokens(s: str) -> List[str]:
+    s = re.sub(r"[^\w\s]", " ", s.lower())
+    return [t for t in s.split() if t]
 
 
 def _allow_chunk(filters, chunk) -> bool:
@@ -100,6 +116,56 @@ def _allow_chunk(filters, chunk) -> bool:
     return True
 
 
+def _load_chunks_from_store() -> None:
+    global CHUNK_BY_ID
+    try:
+        p = Path(_DOC_MAP_PATH)
+        if not p.exists():
+            INDEX.clear()
+            CHUNK_BY_ID = {}
+            return
+        m = json.load(open(p, encoding="utf-8"))
+        stored = m.get("chunks", {})
+        CHUNK_BY_ID = {cid: DocChunk(**payload) for cid, payload in stored.items()}
+        INDEX.clear()  # mutate in place
+        INDEX.extend(CHUNK_BY_ID.values())
+    except Exception:
+        INDEX.clear()
+        CHUNK_BY_ID = {}
+
+
+def _save_chunks_to_store(chunks: List[DocChunk]) -> None:
+    """Persist chunks into the shared doc_map.json under 'chunks'."""
+    try:
+        p = Path(_DOC_MAP_PATH)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        m = {}
+        if p.exists():
+            with p.open("r", encoding="utf-8") as f:
+                try:
+                    m = json.load(f)
+                except Exception:
+                    m = {}
+        m.setdefault("chunks", {})
+        for c in chunks:
+            m["chunks"][c.id] = c.dict()
+        with p.open("w", encoding="utf-8") as f:
+            json.dump(m, f)
+    except Exception:
+        # best-effort persistence
+        pass
+
+
+@app.on_event("startup")
+def _warm_start() -> None:
+    # Ensure FAISS index is initialized and rehydrate chunk corpus
+    try:
+        init_index(dim=get_index_dim())
+    except Exception:
+        pass
+    _load_chunks_from_store()
+
+
 def add_chunks(chunks: List[DocChunk]) -> int:
     """Embed and add chunks to both lexical and dense indexes."""
     if not chunks:
@@ -120,6 +186,11 @@ def add_chunks(chunks: List[DocChunk]) -> int:
         DENSE_VECTORS.append(nv)
         VEC_BY_CHUNK_ID[c.id] = nv
         count += 1
+    # Persist chunk payloads so they survive restarts
+    try:
+        _save_chunks_to_store(chunks)
+    except Exception:
+        pass
     return count
 
 
@@ -185,7 +256,7 @@ async def search(req: RetrieveRequest) -> RetrieveResponse:
     hybrid=True we blend: 0.5*bm25 + 0.5*dense.
     """
     # Tokenize query
-    query_tokens = [t for t in req.query.lower().split() if t]
+    query_tokens = _tokens(req.query)
     candidates: List[DocChunk] = [
         c for c in INDEX if _allow_chunk(getattr(req, "filters", None), c)
     ]
@@ -193,7 +264,7 @@ async def search(req: RetrieveRequest) -> RetrieveResponse:
         return RetrieveResponse(hits=[])
 
     # Precompute corpus statistics over filtered candidates
-    doc_terms: List[List[str]] = [c.text.lower().split() for c in candidates]
+    doc_terms: List[List[str]] = [_tokens(c.text) for c in candidates]
     doc_lens: List[int] = [max(1, len(ts)) for ts in doc_terms]
     avgdl = sum(doc_lens) / len(doc_lens)
     N = len(candidates)
@@ -213,6 +284,17 @@ async def search(req: RetrieveRequest) -> RetrieveResponse:
     q_vecs = embed_texts([req.query], dim=get_index_dim())
     qv = _normalize([float(x) for x in q_vecs[0]]) if q_vecs else []
 
+    # If hybrid, prefetch dense scores from FAISS so searches work after restarts
+    faiss_scores: Dict[str, float] = {}
+    if getattr(req, "hybrid", False) and qv:
+        try:
+            for cid, score in faiss_search(
+                qv, top_k=(getattr(req, "dense_candidates", 0) or 50)
+            ):
+                faiss_scores[cid] = float(score)
+        except Exception:
+            faiss_scores = {}
+
     results: List[RetrieveResult] = []
     for i, chunk in enumerate(candidates):
         terms = doc_terms[i]
@@ -226,9 +308,9 @@ async def search(req: RetrieveRequest) -> RetrieveResponse:
             numerator = tf * (k1 + 1.0)
             denominator = tf + k1 * (1.0 - b + b * (dl / avgdl))
             bm25_score += idf[t] * (numerator / denominator)
-        # Dense cosine similarity using stored vectors
+        # Dense cosine similarity using stored vectors; fallback to FAISS score
         cv = VEC_BY_CHUNK_ID.get(chunk.id)
-        dense_score = _cosine(qv, cv) if cv else 0.0
+        dense_score = _cosine(qv, cv) if cv else faiss_scores.get(chunk.id, 0.0)
         final_score = (
             bm25_score if not req.hybrid else (0.5 * bm25_score + 0.5 * dense_score)
         )
@@ -248,6 +330,6 @@ async def search(req: RetrieveRequest) -> RetrieveResponse:
         "mode": "hybrid" if req.hybrid else "bm25",
         "top_k": req.top_k,
         "filtered": True if getattr(req, "filters", None) else False,
-        "bm25_scores": {c.id: r.bm25 for c, r in zip([c for c in candidates], results)},
+        "bm25_scores": {h.chunk.id: h.bm25 for h in results},
     }
     return RetrieveResponse(hits=top_hits, diagnostics=diag)
