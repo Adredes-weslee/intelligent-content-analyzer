@@ -25,8 +25,10 @@ Notes & limitations
 
 from __future__ import annotations
 
+import glob
 import json
 import math
+import os
 import re
 from pathlib import Path
 from typing import Dict, List
@@ -326,3 +328,22 @@ async def search(req: RetrieveRequest) -> RetrieveResponse:
         "bm25_scores": {h.chunk.id: h.bm25 for h in results},
     }
     return RetrieveResponse(hits=top_hits, diagnostics=diag)
+
+
+@app.get("/debug/storage")
+def debug_storage():
+    idx = os.getenv("FAISS_INDEX_PATH", "/app/data/faiss.index")
+    doc = os.getenv("DOC_MAP_PATH", "/app/data/doc_map.json")
+    base = "/app/data"
+    return {
+        "cwd": os.getcwd(),
+        "faiss_index_path": idx,
+        "doc_map_path": doc,
+        "exists": {
+            "faiss.index": os.path.exists(idx),
+            "doc_map.json": os.path.exists(doc),
+        },
+        "data_dir_listing": sorted(
+            [os.path.basename(p) for p in glob.glob(base + "/*")]
+        ),
+    }
