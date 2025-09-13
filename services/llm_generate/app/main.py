@@ -17,21 +17,10 @@ Endpoints:
     key insights.
 
 Behavior:
-- If OFFLINE_MODE is enabled, both endpoints return deterministic placeholders
-    grounded on the first context chunk with basic citations.
-- Otherwise:
-    - /generate: classify question difficulty (fast vs reasoning) using a router
-        prompt and call the selected Gemini model with a grounded system prompt
-        that forbids using outside knowledge and mandates citations.
-    - /summarize: use the fast Gemini model with a summarizer system prompt to
-        produce a concise summary, key points, and citations.
-
-Observability and endpoint contracts remain unchanged.
-
-Env/Settings keys used:
-- GEMINI_API_KEY
-- Settings.gemini_fast_model (default: gemini-2.5-flash)
-- Settings.gemini_reasoning_model (default: gemini-2.5-pro)
+- If the request has NO context chunks, both endpoints return deterministic
+  fallbacks required by unit tests.
+- If OFFLINE_MODE is enabled or no provider is configured, return fallbacks.
+- Otherwise call Gemini as configured.
 """
 
 from __future__ import annotations
@@ -54,7 +43,7 @@ from shared.tracing import estimate_tokens, install_fastapi_tracing, log_event, 
 
 from .prompts import GENERATOR_SYSTEM_PROMPT, ROUTER_PROMPT, SUMMARIZER_SYSTEM_PROMPT
 
-app = FastAPI(title="LLM Generation Service", version="0.2.0")
+app = FastAPI(title="LLM Generation Service", version="0.2.1")
 install_fastapi_tracing(app, service_name="llm-generate")
 
 s = Settings()
@@ -113,40 +102,47 @@ def _map_bracket_citations(answer_text: str) -> List[int]:
 async def generate_answer(request: GenerateRequest | QARequest) -> QAResponse:
     """Generate an answer using Gemini, grounded in provided context.
 
-    For now, the gateway will compose the context string and include it
-    in diagnostics when calling this service (future: pass explicit chunks).
-    If Gemini is not available, we return a graceful fallback.
+    Unit-test requirement: if no context chunks are provided, return a
+    deterministic fallback containing the word "Insufficient" or "fallback".
     """
+    context_chunks = getattr(request, "context_chunks", None) or []
+    if len(context_chunks) == 0:
+        q = getattr(request, "question", "")
+        return QAResponse(
+            answer=(
+                "Insufficient context to answer the question. "
+                "Fallback: please provide more information or upload documents."
+            ),
+            citations=[],
+            confidence=0.0,
+            diagnostics={"reason": "no_context"},
+        )
 
     context_str = None
-    if hasattr(request, "context_chunks") and isinstance(
-        getattr(request, "context_chunks"), list
-    ):
-        chunks = getattr(request, "context_chunks")
-        try:
-            context_str = "\n\n".join(
-                f"[{i + 1}] doc_id={getattr(c, 'doc_id', '')} page={getattr(getattr(c, 'meta', None), 'page', None)} section={getattr(getattr(c, 'meta', None), 'section', None)}\n{getattr(c, 'text', '')}"
-                for i, c in enumerate(chunks)
-            )
-        except Exception:
-            context_str = None
+    try:
+        context_str = "\n\n".join(
+            f"[{i + 1}] doc_id={getattr(c, 'doc_id', '')} "
+            f"page={getattr(getattr(c, 'meta', None), 'page', None)} "
+            f"section={getattr(getattr(c, 'meta', None), 'section', None)}\n"
+            f"{getattr(c, 'text', '')}"
+            for i, c in enumerate(context_chunks)
+        )
+    except Exception:
+        context_str = None
 
     if s.offline_mode:
         q = getattr(request, "question", "")
-        citations: List[Citation] = []
-        context = getattr(request, "context_chunks", []) or []
-        if context:
-            top = context[0]
-            answer = f"Based on the document, {q.strip()} -> {top.text[:120]} [Doc {top.doc_id}]"
-            citations = [
-                Citation(
-                    doc_id=getattr(top, "doc_id", ""),
-                    page=getattr(top.meta, "page", None),
-                    section=getattr(top.meta, "section", None),
-                )
-            ]
-        else:
-            answer = f"Insufficient context to answer: {q.strip()}"
+        top = context_chunks[0]
+        answer = (
+            f"Based on the document, {q.strip()} -> {top.text[:120]} [Doc {top.doc_id}]"
+        )
+        citations = [
+            Citation(
+                doc_id=getattr(top, "doc_id", ""),
+                page=getattr(getattr(top, "meta", None), "page", None),
+                section=getattr(getattr(top, "meta", None), "section", None),
+            )
+        ]
         return QAResponse(
             answer=answer,
             citations=citations,
@@ -211,7 +207,7 @@ async def generate_answer(request: GenerateRequest | QARequest) -> QAResponse:
                     continue
 
             if not citations:
-                ctx_chunks = getattr(request, "context_chunks", []) or []
+                ctx_chunks = context_chunks
                 idxs = _map_bracket_citations(answer)
                 for i in idxs:
                     if 0 <= i < len(ctx_chunks):
@@ -275,8 +271,21 @@ async def generate_answer(request: GenerateRequest | QARequest) -> QAResponse:
 
 @app.post("/summarize", response_model=SummarizeResponse)
 async def summarize_document(request: SummarizeRequest) -> SummarizeResponse:
-    """Summarize a document from provided chunks using Gemini (fast model)."""
+    """Summarize a document from provided chunks using Gemini (fast model).
+
+    Unit-test requirement: if no chunks are provided, return
+    'No content to summarize.' regardless of provider/online status.
+    """
     chunks = request.chunks or []
+    if len(chunks) == 0:
+        return SummarizeResponse(
+            doc_id=request.doc_id,
+            summary="No content to summarize.",
+            key_points=[],
+            citations=[],
+            diagnostics={"reason": "no_chunks"},
+        )
+
     if s.offline_mode or genai is None:
         text = getattr(chunks[0], "text", "") if chunks else ""
         summary = f"Summary: {text[:200]}..." if text else "No content to summarize."
@@ -295,7 +304,7 @@ async def summarize_document(request: SummarizeRequest) -> SummarizeResponse:
             summary=summary,
             key_points=[] if not text else [text[:80] + "..."],
             citations=citations,
-            diagnostics={"mode": "offline"},
+            diagnostics={"mode": "offline" if s.offline_mode else "no_provider"},
         )
 
     try:
