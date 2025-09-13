@@ -1,21 +1,23 @@
-"""Tests for the ingest service."""
+import os
 
 from fastapi.testclient import TestClient
 
-from services.ingest.app.main import app
+# Ensure offline mode (no OCR/LLM calls)
+os.environ["OFFLINE_MODE"] = "1"
+
+from services.ingest.app.main import app  # type: ignore
 
 
-def test_ingest_returns_chunks() -> None:
+def test_ingest_basic_text_file() -> None:
     client = TestClient(app)
-    # Upload a small text file
     content = b"Hello world. This is a test document."
-    response = client.post(
+    resp = client.post(
         "/ingest",
         files={"file": ("test.txt", content, "text/plain")},
     )
-    assert response.status_code == 200
-    data = response.json()
+    assert resp.status_code == 200
+    data = resp.json()
     assert "doc_id" in data
     assert "chunks" in data
-    # At least one chunk should be returned
+    assert isinstance(data["chunks"], list)
     assert len(data["chunks"]) >= 1
