@@ -49,7 +49,7 @@ install_fastapi_tracing(app, service_name="llm-generate")
 
 @app.get("/")
 def _root():
-    return {"status": "ok", "service": "api-gateway"}
+    return {"status": "ok", "service": "llm-generate"}
 
 
 @app.get("/health")
