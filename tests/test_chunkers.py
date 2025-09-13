@@ -43,9 +43,7 @@ More text goes here continuing the discussion.
             text, max_tokens=6, respect_pages=True, respect_headings=True
         )
     )
-    # Ensure we produced chunks
     assert len(out) >= 3
-    # Validate tuple structure and metadata propagation
     for chunk, page, section, table_id in out:
         assert isinstance(chunk, str)
         assert page in {1, 2}

@@ -2,7 +2,6 @@ import os
 
 from fastapi.testclient import TestClient
 
-# Force offline to avoid network
 os.environ["OFFLINE_MODE"] = "1"
 
 import os
@@ -79,7 +78,7 @@ def test_map_bracket_citations_parses_indices() -> None:
         "See details in [1] and [2], duplicate [2] and ignore [12] out of range later."
     )
     idxs = _map_bracket_citations(txt)
-    assert idxs == [0, 1, 11]  # zero-based, de-duped in order
+    assert idxs == [0, 1, 11]
 
 
 def test_summarize_offline_no_chunks() -> None:

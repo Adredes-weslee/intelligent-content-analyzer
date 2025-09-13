@@ -2,7 +2,6 @@ import os
 
 from fastapi.testclient import TestClient
 
-# Ensure offline mode (no OCR/LLM calls)
 os.environ["OFFLINE_MODE"] = "1"
 
 from services.ingest.app.main import app  # type: ignore

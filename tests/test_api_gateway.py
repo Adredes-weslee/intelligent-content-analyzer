@@ -6,7 +6,6 @@ from fastapi.testclient import TestClient
 
 from services.api_gateway.app.routers import qa as qa_router
 
-# Force offline and disable judge to avoid external calls
 os.environ["OFFLINE_MODE"] = "1"
 os.environ["EVAL_LLM_ENABLED"] = "0"
 
@@ -21,7 +20,6 @@ from shared.cache import (
 )
 from shared.tracing import log_event, span
 
-# Isolate gateway; avoid indexing side-effects and OCR
 os.environ["OFFLINE_MODE"] = "1"
 
 from shared.models import (
@@ -101,7 +99,6 @@ def test_ask_question_unit_isolated() -> None:
 
 def test_upload_document_unit_isolated() -> None:
     fake_text = "Hello world. Unit testing upload."
-    # Patch heavy dependencies inside upload flow
     with (
         patch(
             "services.api_gateway.app.routers.upload.parse_document",
@@ -158,10 +155,9 @@ def test_content_fingerprint_determinism() -> None:
 def test_semantic_key_generation() -> None:
     key = semantic_key("Hello world")
     assert isinstance(key, str)
-    # Validate "prefix:hexdigest" shape without assuming exact prefix text
     assert ":" in key
     prefix, digest = key.split(":", 1)
-    assert prefix  # non-empty prefix
+    assert prefix
     hexchars = set("0123456789abcdef")
     s = digest.lower()
     assert len(s) in (40, 64) and all(c in hexchars for c in s)
@@ -192,14 +188,12 @@ class _CountingCache:
     def get(self, k):
         return self.store.get(k)
 
-    # qa.py uses _cache.set(..., ttl=...)
     def set(self, k, v, ttl=None, **kwargs):
         self.set_calls += 1
         self.store[k] = v
 
 
 def test_ask_question_writes_to_cache(monkeypatch) -> None:
-    # Ensure caching paths are enabled in the router
     if hasattr(qa_router, "_settings"):
         monkeypatch.setattr(
             qa_router._settings, "rate_limit_enabled", True, raising=True
@@ -224,5 +218,4 @@ def test_ask_question_writes_to_cache(monkeypatch) -> None:
             "/ask_question", json={"question": "cache me", "k": 2, "use_rerank": False}
         )
         assert resp.status_code == 200
-        # At least the rate-limit write should fire; response writes also run when cache_enabled=True
         assert c.set_calls >= 1

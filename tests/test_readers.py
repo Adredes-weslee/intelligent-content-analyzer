@@ -1,6 +1,5 @@
 import os
 
-# Force offline (no OCR/LLM calls)
 os.environ["OFFLINE_MODE"] = "1"
 
 from services.ingest.app.readers import (  # type: ignore
@@ -28,7 +27,7 @@ def test_parse_html_basic_extraction() -> None:
     html = b"<html><body><h1>Header</h1><p>Para</p><script>x()</script></body></html>"
     out = _parse_html(html)
     assert "Header" in out and "Para" in out
-    assert "x()" not in out  # script removed
+    assert "x()" not in out
 
 
 def test_parse_csv_prefers_csv_over_excel() -> None:
@@ -39,7 +38,6 @@ def test_parse_csv_prefers_csv_over_excel() -> None:
 
 
 def test_parse_image_offline_returns_empty() -> None:
-    # Random bytes that won't decode to an image will return empty string
     out = _parse_image(b"\x00\x01\x02\x03")
     assert out == ""
 

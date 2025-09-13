@@ -5,7 +5,6 @@ from services.retrieval.app.main import INDEX
 from services.retrieval.app.main import search as bm25_search
 from shared.models import DocChunk, DocMetadata, RetrieveRequest
 
-# Keep retrieval isolated and deterministic
 os.environ["OFFLINE_MODE"] = "1"
 
 from services.retrieval.app.hybrid import hybrid_search  # type: ignore
@@ -17,7 +16,6 @@ def make_chunk(cid: str, text: str, doc_id: str = "d1") -> DocChunk:
 
 
 def test_hybrid_search_unit_with_in_memory_index() -> None:
-    # Seed a minimal in-memory index (BM25 will operate over INDEX)
     RETRIEVAL_INDEX.clear()
     docs: List[DocChunk] = [
         make_chunk("c1", "The sky is blue and the sun is bright."),
@@ -30,7 +28,6 @@ def test_hybrid_search_unit_with_in_memory_index() -> None:
     res = __import__("asyncio").get_event_loop().run_until_complete(hybrid_search(req))
     assert res.hits is not None
     assert len(res.hits) >= 1
-    # Top hit should be relevant to "sky"
     assert any("sky" in h.chunk.text.lower() for h in res.hits[:2])
 
 
