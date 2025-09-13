@@ -50,11 +50,13 @@ from shared.models import (
     SummarizeResponse,
 )
 from shared.settings import Settings
-from shared.tracing import estimate_tokens, log_event, span
+from shared.tracing import estimate_tokens, install_fastapi_tracing, log_event, span
 
 from .prompts import GENERATOR_SYSTEM_PROMPT, ROUTER_PROMPT, SUMMARIZER_SYSTEM_PROMPT
 
 app = FastAPI(title="LLM Generation Service", version="0.2.0")
+install_fastapi_tracing(app, service_name="llm-generate")
+
 s = Settings()
 
 _GEMINI_API_KEY = s.gemini_api_key
