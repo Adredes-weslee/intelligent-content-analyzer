@@ -3,11 +3,15 @@
 This service exposes a unified REST interface to the outside world and
 delegates work to the underlying microservices. It hides the
 complexity of ingestion, retrieval, generation and evaluation behind
-three simple endpoints. The gateway composes synchronous calls to the
-Python modules directly rather than making network requests. This
-keeps the example small and avoids the need to start all services
-during testing. In a real deployment the gateway would send HTTP
-requests to the other services.
+three simple endpoints.
+
+Local/dev mode:
+- The gateway composes synchronous calls to the Python modules directly
+  rather than making network requests. This keeps the example small and
+  avoids the need to start all services during testing.
+
+Cloud/HTTP mode:
+- In a real deployment the gateway sends HTTP requests to the other services.
 """
 
 from __future__ import annotations
@@ -16,6 +20,7 @@ import json
 import os
 from pathlib import Path
 
+import requests
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -24,19 +29,16 @@ from shared.tracing import install_fastapi_tracing
 
 from .routers import qa, summary, upload
 
+# Optional in‑proc retrieval imports (used only in local/dev mode)
 try:
     from services.retrieval.app.faiss_store import (
         _DOC_MAP_PATH as _RETRIEVAL_DOC_MAP,
     )
-    from services.retrieval.app.faiss_store import (
-        get_index_dim as _retrieval_get_dim,
-    )
+    from services.retrieval.app.faiss_store import get_index_dim as _retrieval_get_dim
     from services.retrieval.app.faiss_store import (
         get_index_dim as _retrievel_get_dim,  # noqa: F401 (spelling kept stable)
     )
-    from services.retrieval.app.faiss_store import (
-        init_index as _retrieval_init_index,
-    )
+    from services.retrieval.app.faiss_store import init_index as _retrieval_init_index
     from services.retrieval.app.main import INDEX as RETRIEVAL_INDEX
     from services.retrieval.app.main import _load_chunks_from_store as _retrieval_load
 except Exception:
@@ -46,11 +48,11 @@ except Exception:
     _retrieval_get_dim = None
     _RETRIEVAL_DOC_MAP = None
 
-
 app = FastAPI(title="API Gateway", version="0.1.0")
 install_fastapi_tracing(app, service_name="api-gateway")
 
 
+# Health/root endpoints
 @app.get("/")
 def _root():
     return {"status": "ok", "service": "api-gateway"}
@@ -61,6 +63,7 @@ def _health():
     return {"status": "ok"}
 
 
+# CORS
 allowed = [
     os.getenv(
         "STREAMLIT_APP_ORIGIN",
@@ -78,14 +81,28 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
+# Routers
 app.include_router(upload.router, prefix="", tags=["upload"])
 app.include_router(qa.router, prefix="", tags=["qa"])
 app.include_router(summary.router, prefix="", tags=["summary"])
 
+# Determine mode: HTTP microservices vs local in‑proc
+s = Settings()
+USE_HTTP = any(
+    [
+        (os.getenv("INGEST_URL") or s.ingest_url),
+        (os.getenv("RETRIEVAL_URL") or s.retrieval_url),
+        (os.getenv("LLM_GENERATE_URL") or s.llm_generate_url),
+        (os.getenv("EVALUATION_URL") or s.evaluation_url),
+    ]
+)
+
 
 @app.on_event("startup")
 def _bootstrap_retrieval_inproc() -> None:
+    # Skip local bootstrap when using HTTP upstream services (cloud mode)
+    if USE_HTTP:
+        return
     if _retrieval_load and _retrieval_init_index and _retrieval_get_dim:
         try:
             _retrieval_init_index(dim=_retrieval_get_dim())
@@ -99,6 +116,19 @@ def _bootstrap_retrieval_inproc() -> None:
 
 @app.get("/_retrieval_status")
 def _retrieval_status():
+    # In cloud mode, query the retrieval service over HTTP.
+    if USE_HTTP:
+        base = (os.getenv("RETRIEVAL_URL") or s.retrieval_url or "").rstrip("/")
+        if not base:
+            return {"error": "RETRIEVAL_URL not configured"}
+        try:
+            r = requests.get(f"{base}/status", timeout=10)
+            r.raise_for_status()
+            return r.json()
+        except Exception as e:
+            return {"error": str(e)}
+
+    # Local/dev mode: inspect in‑proc retrieval state/files.
     abs_path = str(Path(_RETRIEVAL_DOC_MAP).resolve()) if _RETRIEVAL_DOC_MAP else None
     chunk_count = None
     if _RETRIEVAL_DOC_MAP and Path(_RETRIEVAL_DOC_MAP).exists():
@@ -122,9 +152,6 @@ def _retrieval_status():
         ),
         "doc_map_chunks": chunk_count,
     }
-
-
-s = Settings()
 
 
 @app.on_event("startup")
