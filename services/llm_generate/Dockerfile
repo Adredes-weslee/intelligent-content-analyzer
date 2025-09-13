@@ -1,11 +1,17 @@
 FROM python:3.10-slim
 
-COPY ../../requirements.txt /requirements.txt
-RUN pip install --no-cache-dir -r /requirements.txt
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
 
-COPY ./app /app/app
-COPY ../../shared /app/shared
 WORKDIR /app
+
+COPY requirements.txt /tmp/requirements.txt
+RUN python -m pip install --upgrade pip && pip install -r /tmp/requirements.txt
+
+COPY services/llm_generate/app /app/app
+COPY shared /app/shared
+
 ENV PYTHONPATH=/app
 EXPOSE 8000
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
