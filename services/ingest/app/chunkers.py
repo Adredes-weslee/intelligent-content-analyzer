@@ -52,25 +52,30 @@ def _is_heading(line: str) -> Optional[str]:
     - Numbered headings: 1. or 1.2.3 style prefixes
     - Title-like lines: short lines with Title Case or ALL CAPS
     """
-    s = line.strip()
+    s = (line or "").strip()
     if not s:
         return None
-    m = re.match(r"^(#{1,6})\s+(.+)$", s)
+
+    # Ignore page markers and table tags
+    if s.startswith("=== Page ") and s.endswith(" ==="):
+        return None
+    if s.startswith("[table") or s.startswith("[/table"):
+        return None
+
+    # ATX Markdown headings: "#", "##", ..., "######"
+    m = re.match(r"^#{1,6}\s+(.+)$", s)
     if m:
-        return m.group(2).strip()
-    if re.match(r"^\d+(?:\.\d+)*\s+.+$", s):
+        return m.group(1).strip()
+
+    # Numbered headings: "1. Title", "1) Title", "2.3 Methods", "2.3.1 Title"
+    m = re.match(r"^\d+(?:\.\d+)*[.)]?\s+(.+)$", s)
+    if m:
+        return m.group(1).strip()
+
+    # ALL-CAPS short lines treated as titles
+    if s == s.upper() and any(c.isalpha() for c in s) and len(s.split()) <= 10:
         return s
-    # Title-like: <= 80 chars, few punctuation, many caps
-    if len(s) <= 80 and not s.endswith(":"):
-        # Avoid page headers and table markers
-        if s.startswith("=== Page ") or s.startswith("[table "):
-            return None
-        words = s.split()
-        if 1 <= len(words) <= 12:
-            uppers = sum(1 for ch in s if ch.isupper())
-            letters = sum(1 for ch in s if ch.isalpha())
-            if letters > 0 and uppers / max(1, letters) > 0.35:
-                return s
+
     return None
 
 
