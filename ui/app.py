@@ -376,7 +376,7 @@ if submitted:
             st.info("Restriction is on, but no document is uploaded yet.")
     try:
         resp = requests.post(
-            f"{st.session_state['api_url']}/ask_question", json=payload, timeout=60
+            f"{st.session_state['api_url']}/ask_question", json=payload, timeout=120
         )
         if resp.ok:
             st.session_state["qa_result"] = resp.json()
@@ -405,7 +405,7 @@ if summarize_clicked:
             resp = requests.get(
                 f"{st.session_state['api_url']}/document_summary",
                 params={"doc_id": doc_id},
-                timeout=60,
+                timeout=120,
             )
             if resp.ok:
                 st.session_state["summary"] = resp.json().get("summary")
