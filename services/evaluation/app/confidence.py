@@ -1,102 +1,82 @@
 """Confidence scoring utilities.
 
-This module exposes a single helper, ``compute_confidence()``, that
-produces a confidence score in ``[0.0, 1.0]`` for a generated answer.
-
-How the score is computed (pure, no I/O):
-- Retrieval component: mean of ``RetrieveResult.score`` across
-    ``retrieval_hits``; if no hits are provided, this term is ``0.0``.
-- Evaluation component: linear combination of values from ``eval_scores``
-    for the keys ``"factuality"``, ``"relevance"``, ``"completeness"``, and optionally
-    extended metrics ``"faithfulness"``, ``"context_relevance_ratio"``, and
-    ``"answer_relevance_1_5"`` (normalized to 0–1 internally);
-    any missing key is treated as ``0.0``.
-- Optional judge component: if ``judge_scores`` is provided, the mean of
-    the same three keys (missing keys ignored) is multiplied by the judge
-    weight; if no valid judge values are present, this term is ``0.0``.
-
-Weights and defaults:
-- Callers may provide a ``weights`` dict with keys ``"retrieval"``,
-    ``"factuality"``, ``"relevance"``, ``"completeness"``, optional
-    ``"faithfulness"``, ``"context_relevance"``, ``"answer_relevance"``, and ``"judge"``.
-- When ``weights`` is not provided, the following defaults are used:
-    ``{"retrieval": 0.35, "factuality": 0.20, "relevance": 0.20, "completeness": 0.20, "judge": 0.05}``.
-- Unrecognized weight keys are ignored. Missing keys default to ``0.0``.
-- Weights are not re-normalized inside the function.
-
-Assumptions and guarantees:
-- Inputs for metrics are expected to be normalized to ``[0, 1]`` upstream.
-- The final score is clamped to the inclusive range ``[0.0, 1.0]``.
-- The function has no side effects and does not perform logging, I/O,
-    or tracing.
+Blends retrieval signals, heuristic evaluation scores, and optional judge
+scores into a single confidence value in [0,1].
 """
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
-from shared.models import RetrieveResult
+
+def _clip01(x: float) -> float:
+    try:
+        if x != x:  # NaN
+            return 0.0
+        return 0.0 if x < 0.0 else 1.0 if x > 1.0 else float(x)
+    except Exception:
+        return 0.0
+
+
+def _avg_clip01(d: Dict[str, float]) -> float:
+    if not d:
+        return 0.0
+    vals = [_clip01(v) for v in d.values()]
+    if not vals:
+        return 0.0
+    return sum(vals) / len(vals)
 
 
 def compute_confidence(
-    retrieval_hits: List[RetrieveResult],
+    *,
+    retrieval_top: float,
+    retrieval_mean: float,
     eval_scores: Dict[str, float],
-    weights: Optional[Dict[str, float]] = None,
     judge_scores: Optional[Dict[str, float]] = None,
+    weights: Optional[Dict[str, float]] = None,
 ) -> float:
-    """Compute a confidence score between 0 and 1.
+    """Blend retrieval signals, evaluation metrics, and optional judge scores into [0,1].
 
-    Args:
-        retrieval_hits: The search results used to answer the question.
-        eval_scores: A dict with keys 'factuality', 'relevance',
-            'completeness' representing evaluation metrics.
-        weights: Optional weights for each component. Defaults to
-            equal weighting.
+    Parameters
+    - retrieval_top: top hit score (normalized or will be clipped to [0,1])
+    - retrieval_mean: mean score over the used top-k (normalized or clipped)
+    - eval_scores: dict with keys like factuality, relevance, completeness, faithfulness
+    - judge_scores: optional dict of judge-derived scores (e.g., entailment/faithfulness)
+    - weights: optional override of weighting
 
-    Returns:
-        A float confidence score.
+    Returns
+    - confidence in [0,1]
     """
-    if not weights:
-        weights = {
-            "retrieval": 0.3,
-            "factuality": 0.2,
-            "relevance": 0.15,
-            "completeness": 0.15,
-            "faithfulness": 0.1,
-            "context_relevance": 0.05,
-            "answer_relevance": 0.05,
-            "judge": 0.0,
-        }
-    # Compute average retrieval score
-    if retrieval_hits:
-        avg_retrieval = sum(hit.score for hit in retrieval_hits) / len(retrieval_hits)
-    else:
-        avg_retrieval = 0.0
-    # Weighted sum
-    confidence = (
-        weights.get("retrieval", 0.0) * avg_retrieval
-        + weights.get("factuality", 0.0) * eval_scores.get("factuality", 0.0)
-        + weights.get("relevance", 0.0) * eval_scores.get("relevance", 0.0)
-        + weights.get("completeness", 0.0) * eval_scores.get("completeness", 0.0)
-        + weights.get("faithfulness", 0.0) * eval_scores.get("faithfulness", 0.0)
-        + weights.get("context_relevance", 0.0)
-        * eval_scores.get("context_relevance_ratio", 0.0)
-        + weights.get("answer_relevance", 0.0)
-        * (
-            max(
-                0.0,
-                min(1.0, (eval_scores.get("answer_relevance_1_5", 0.0) - 1.0) / 4.0),
-            )
-        )
+    w = {
+        "retrieval_top": 0.25,
+        "retrieval_mean": 0.10,
+        "factuality": 0.25,
+        "relevance": 0.15,
+        "completeness": 0.10,
+        "faithfulness": 0.10,
+        "judge": 0.05,
+    }
+    if weights:
+        w.update(weights)
+
+    rt = _clip01(retrieval_top)
+    rm = _clip01(retrieval_mean)
+
+    fact = _clip01(eval_scores.get("factuality", 0.0))
+    rel = _clip01(eval_scores.get("relevance", 0.0))
+    comp = _clip01(eval_scores.get("completeness", 0.0))
+    faith = _clip01(eval_scores.get("faithfulness", 0.0))
+
+    judge_avg = _avg_clip01(judge_scores or {})
+
+    score = (
+        w["retrieval_top"] * rt
+        + w["retrieval_mean"] * rm
+        + w["factuality"] * fact
+        + w["relevance"] * rel
+        + w["completeness"] * comp
+        + w["faithfulness"] * faith
+        + w["judge"] * judge_avg
     )
-    # Incorporate judge if available: mean of provided judge metrics
-    if judge_scores:
-        js_vals = [
-            v
-            for k, v in judge_scores.items()
-            if k in ("factuality", "relevance", "completeness")
-        ]
-        if js_vals:
-            confidence += weights.get("judge", 0.0) * (sum(js_vals) / len(js_vals))
-    # Clamp to [0,1]
-    return max(0.0, min(1.0, confidence))
+    # Final clamp
+    return _clip01(score)
