@@ -19,7 +19,7 @@ from fastapi import FastAPI
 from services.llm_generate.app.prompts import JUDGE_SYSTEM_PROMPT
 from shared.models import EvaluateRequest, EvaluateResponse
 from shared.settings import Settings
-from shared.tracing import span
+from shared.tracing import install_fastapi_tracing, span
 
 from .metrics import (
     heuristic_answer_relevance_1_5,
@@ -29,6 +29,8 @@ from .metrics import (
 )
 
 app = FastAPI(title="Evaluation Service", version="0.2.0")
+install_fastapi_tracing(app, service_name="evaluation")
+
 _settings = Settings()
 
 _genai = None
@@ -75,7 +77,8 @@ async def evaluate(req: EvaluateRequest) -> EvaluateResponse:
 
         # Optional LLM-as-judge enrichment
         judge_payload = None
-        if _genai is not None:
+        # Only call LLM judge if globally enabled AND not explicitly disabled in request
+        if _genai is not None and (req.use_judge is not False):
             try:
                 text_sources = "\n\n".join(
                     [getattr(c, "text", "") for c in req.sources]
