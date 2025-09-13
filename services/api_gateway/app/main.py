@@ -19,6 +19,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from shared.settings import Settings
 from shared.tracing import install_fastapi_tracing
 
 from .routers import qa, summary, upload
@@ -110,3 +111,26 @@ def _retrieval_status():
         ),
         "doc_map_chunks": chunk_count,
     }
+
+
+s = Settings()
+
+
+@app.on_event("startup")
+async def _log_upstreams() -> None:
+    upstreams = {
+        "INGEST_URL": (os.getenv("INGEST_URL") or s.ingest_url or "").rstrip("/"),
+        "RETRIEVAL_URL": (os.getenv("RETRIEVAL_URL") or s.retrieval_url or "").rstrip(
+            "/"
+        ),
+        "EMBEDDINGS_URL": (
+            os.getenv("EMBEDDINGS_URL") or s.embeddings_url or ""
+        ).rstrip("/"),
+        "LLM_GENERATE_URL": (
+            os.getenv("LLM_GENERATE_URL") or s.llm_generate_url or ""
+        ).rstrip("/"),
+        "EVALUATION_URL": (
+            os.getenv("EVALUATION_URL") or s.evaluation_url or ""
+        ).rstrip("/"),
+    }
+    print(f"[api-gateway] Upstream services: {upstreams}")
