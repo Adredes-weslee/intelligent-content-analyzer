@@ -285,7 +285,7 @@ def _gemini_image_to_text(pil_image: Image.Image) -> str:
     if genai is None:
         return ""
     try:
-        model_name = _GEMINI_FAST or "gemini-2.5-flash"
+        model_name = _GEMINI_REASON
         model = genai.GenerativeModel(model_name)
         prompt = "Describe or transcribe the image succinctly. Include visible text exactly when present."
         resp = model.generate_content([pil_image, prompt])
