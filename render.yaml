@@ -1,0 +1,186 @@
+services:
+  - type: redis
+    name: redis
+    plan: free
+
+  - type: web
+    name: ingest
+    env: docker
+    dockerfilePath: services/ingest/Dockerfile
+    plan: free
+    envVars:
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: redis
+          property: connectionString
+      # Langfuse (optional)
+      - key: LANGFUSE_HOST
+        sync: false
+      - key: LANGFUSE_PUBLIC_KEY
+        sync: false
+      - key: LANGFUSE_SECRET_KEY
+        sync: false
+      - key: LANGFUSE_TRACING_ENVIRONMENT
+        value: render
+
+  - type: web
+    name: embeddings
+    env: docker
+    dockerfilePath: services/embeddings/Dockerfile
+    plan: free
+    envVars:
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: redis
+          property: connectionString
+      - key: GEMINI_API_KEY
+        sync: false
+      # Langfuse (optional)
+      - key: LANGFUSE_HOST
+        sync: false
+      - key: LANGFUSE_PUBLIC_KEY
+        sync: false
+      - key: LANGFUSE_SECRET_KEY
+        sync: false
+      - key: LANGFUSE_TRACING_ENVIRONMENT
+        value: render
+
+  - type: web
+    name: retrieval
+    env: docker
+    dockerfilePath: services/retrieval/Dockerfile
+    plan: free
+    disk:
+      name: faiss-data
+      mountPath: /app/data
+      sizeGB: 1
+    envVars:
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: redis
+          property: connectionString
+      # Persist HF caches on the mounted disk
+      - key: HF_HOME
+        value: /app/data/.cache/huggingface
+      - key: TRANSFORMERS_CACHE
+        value: /app/data/.cache/huggingface/transformers
+      # Optional extra caches
+      - key: HF_HUB_CACHE
+        value: /app/data/.cache/huggingface/hub
+      - key: HF_DATASETS_CACHE
+        value: /app/data/.cache/huggingface/datasets
+      - key: SENTENCE_TRANSFORMERS_HOME
+        value: /app/data/.cache/huggingface
+      # Persisted FAISS store (absolute paths under /app/data)
+      - key: FAISS_INDEX_PATH
+        value: /app/data/faiss.index
+      - key: DOC_MAP_PATH
+        value: /app/data/doc_map.json
+      - key: VECTOR_STORE
+        value: FAISS
+      # Langfuse (optional)
+      - key: LANGFUSE_HOST
+        sync: false
+      - key: LANGFUSE_PUBLIC_KEY
+        sync: false
+      - key: LANGFUSE_SECRET_KEY
+        sync: false
+      - key: LANGFUSE_TRACING_ENVIRONMENT
+        value: render
+
+  - type: web
+    name: llm-generate
+    env: docker
+    dockerfilePath: services/llm_generate/Dockerfile
+    plan: free
+    envVars:
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: redis
+          property: connectionString
+      - key: GEMINI_API_KEY
+        sync: false
+      # Langfuse (optional)
+      - key: LANGFUSE_HOST
+        sync: false
+      - key: LANGFUSE_PUBLIC_KEY
+        sync: false
+      - key: LANGFUSE_SECRET_KEY
+        sync: false
+      - key: LANGFUSE_TRACING_ENVIRONMENT
+        value: render
+
+  - type: web
+    name: evaluation
+    env: docker
+    dockerfilePath: services/evaluation/Dockerfile
+    plan: free
+    envVars:
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: redis
+          property: connectionString
+      - key: GEMINI_API_KEY
+        sync: false
+      # Langfuse (optional)
+      - key: LANGFUSE_HOST
+        sync: false
+      - key: LANGFUSE_PUBLIC_KEY
+        sync: false
+      - key: LANGFUSE_SECRET_KEY
+        sync: false
+      - key: LANGFUSE_TRACING_ENVIRONMENT
+        value: render
+
+  - type: web
+    name: api-gateway
+    env: docker
+    dockerfilePath: services/api_gateway/Dockerfile
+    plan: free
+    envVars:
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: redis
+          property: connectionString
+      - key: INGEST_URL
+        fromService:
+          type: web
+          name: ingest
+          property: url
+      - key: RETRIEVAL_URL
+        fromService:
+          type: web
+          name: retrieval
+          property: url
+      - key: EMBEDDINGS_URL
+        fromService:
+          type: web
+          name: embeddings
+          property: url
+      - key: LLM_GENERATE_URL
+        fromService:
+          type: web
+          name: llm-generate
+          property: url
+      - key: EVALUATION_URL
+        fromService:
+          type: web
+          name: evaluation
+          property: url
+      - key: STREAMLIT_APP_ORIGIN
+        sync: false
+      # Langfuse (optional)
+      - key: LANGFUSE_HOST
+        sync: false
+      - key: LANGFUSE_PUBLIC_KEY
+        sync: false
+      - key: LANGFUSE_SECRET_KEY
+        sync: false
+      - key: LANGFUSE_TRACING_ENVIRONMENT
+        value: render
