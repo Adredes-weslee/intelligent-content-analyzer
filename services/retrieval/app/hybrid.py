@@ -14,6 +14,7 @@ generation.
 
 from __future__ import annotations
 
+import re
 from collections import OrderedDict
 from typing import Dict, List, Tuple
 
@@ -22,72 +23,53 @@ from shared.models import RetrieveRequest, RetrieveResponse, RetrieveResult
 from shared.settings import Settings
 from shared.tracing import log_event, span
 
+from . import main as _ret
 from .faiss_store import get_index_dim
 from .faiss_store import search as faiss_search
-from .main import INDEX as _INDEX
 from .main import search as bm25_search
 
 
-def _cosine_sim(a: Dict[str, int], b: Dict[str, int]) -> float:
-    """Compute cosine similarity between two sparse bag-of-words dicts."""
-    if not a or not b:
-        return 0.0
-    num = sum(a.get(k, 0) * b.get(k, 0) for k in set(a.keys()) | set(b.keys()))
-    da = sum(v * v for v in a.values()) ** 0.5 or 1.0
-    db = sum(v * v for v in b.values()) ** 0.5 or 1.0
-    return num / (da * db)
+def _tokens(s: str) -> List[str]:
+    s = re.sub(r"[^\w\s]", " ", s.lower())
+    return [t for t in s.split() if t]
 
 
-def _allow_chunk(filters, chunk) -> bool:
-    if not filters:
-        return True
-    # doc_id filter
-    if getattr(filters, "include_doc_ids", None):
-        if chunk.doc_id not in set(filters.include_doc_ids):
-            return False
-    # source/lang from meta
-    meta = getattr(chunk, "meta", None)
-    src = (
-        getattr(meta, "source", None)
-        if meta and not isinstance(meta, dict)
-        else (meta.get("source") if isinstance(meta, dict) else None)
-    )
-    lang = (
-        getattr(meta, "lang", None)
-        if meta and not isinstance(meta, dict)
-        else (meta.get("lang") if isinstance(meta, dict) else None)
-    )
-    if getattr(filters, "include_sources", None):
-        if src not in set(filters.include_sources):
-            return False
-    if getattr(filters, "lang", None):
-        if lang != filters.lang:
-            return False
-    return True
+def _ensure_corpus_loaded() -> None:
+    # Load chunks from store if INDEX is empty (in-process gateway run)
+    try:
+        if getattr(_ret, "INDEX", None) is not None and len(_ret.INDEX) == 0:
+            _ret._load_chunks_from_store()
+    except Exception:
+        pass
 
 
 async def hybrid_search(request: RetrieveRequest) -> RetrieveResponse:
     """Perform a hybrid search combining keyword and dense retrieval."""
     s = Settings()
 
+    _ensure_corpus_loaded()
     with span(
         "retrieval.hybrid",
         query=request.query,
         top_k=request.top_k,
         corr=getattr(request, "correlation_id", None),
     ):
-        # 1) BM25 baseline
+        # 1) BM25 baseline (uses main.search which now normalizes tokens)
         bm25_resp = await bm25_search(request)
     bm25_hits = bm25_resp.hits
     # Apply per-query filters to bm25 hits
     bm25_hits = [
-        h for h in bm25_hits if _allow_chunk(getattr(request, "filters", None), h.chunk)
+        h
+        for h in bm25_hits
+        if _ret._allow_chunk(getattr(request, "filters", None), h.chunk)
     ]
     bm25_ids = [h.chunk.id for h in bm25_hits]
 
     # Helper: chunk lookup (filtered)
     id2chunk = {
-        c.id: c for c in _INDEX if _allow_chunk(getattr(request, "filters", None), c)
+        c.id: c
+        for c in _ret.INDEX
+        if _ret._allow_chunk(getattr(request, "filters", None), c)
     }
 
     # 2) Dense ranking
@@ -115,16 +97,22 @@ async def hybrid_search(request: RetrieveRequest) -> RetrieveResponse:
             raise RuntimeError("faiss returned no results")
     except Exception:
         # Fallback: BoW-cosine dense proxy over the whole filtered index
-        q_tokens = [t for t in request.query.lower().split() if t]
+        q_tokens = _tokens(request.query)
         q_bow: Dict[str, int] = {}
         for t in q_tokens:
             q_bow[t] = q_bow.get(t, 0) + 1
         for c in id2chunk.values():
-            c_tokens = [t for t in c.text.lower().split() if t]
+            c_tokens = _tokens(c.text)
             c_bow: Dict[str, int] = {}
             for t in c_tokens:
                 c_bow[t] = c_bow.get(t, 0) + 1
-            dense_results.append((c.id, _cosine_sim(q_bow, c_bow)))
+            # cosine for sparse vectors
+            num = sum(
+                q_bow.get(k, 0) * c_bow.get(k, 0) for k in set(q_bow) | set(c_bow)
+            )
+            da = sum(v * v for v in q_bow.values()) ** 0.5 or 1.0
+            db = sum(v * v for v in c_bow.values()) ** 0.5 or 1.0
+            dense_results.append((c.id, num / (da * db)))
 
     # Keep top‑N dense candidates
     dense_results.sort(key=lambda kv: kv[1], reverse=True)
@@ -143,7 +131,7 @@ async def hybrid_search(request: RetrieveRequest) -> RetrieveResponse:
     # 4) RRF combine
     bm25_rank: Dict[str, int] = {cid: i + 1 for i, cid in enumerate(bm25_ids)}
     dense_rank: Dict[str, int] = {cid: i + 1 for i, (cid, _) in enumerate(top_dense)}
-    k = 60.0
+    k = 20.0  # smaller k → higher RRF scores than 60
     rrf_scores: Dict[str, float] = {}
     for cid in union_ids:
         r1 = bm25_rank.get(cid, 10**6)
