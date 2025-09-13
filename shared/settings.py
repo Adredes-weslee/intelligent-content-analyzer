@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     )
 
     embedding_model: str = Field("gemini-embedding-001", env=["EMBEDDING_MODEL"])
-    embedding_dim: int = Field(3072, env="GEMINI_EMBEDDING_DIM")
+    embedding_dim: int = Field(768, env="GEMINI_EMBEDDING_DIM")
     vector_store: str = Field("FAISS", env="VECTOR_STORE")
     reranker: str = Field("bge-reranker", env="RERANKER")
     language_mode: str = Field("multilingual", env="LANGUAGE_MODE")
