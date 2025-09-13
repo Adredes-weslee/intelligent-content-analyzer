@@ -1,12 +1,24 @@
-version: "3.8"
+version: "3.9"
+
+x-health-tcp: &health_tcp
+  test: ["CMD-SHELL", "python -c \"import socket; s=socket.create_connection(('localhost', 8000), 2); s.close()\""]
+  interval: 10s
+  timeout: 3s
+  retries: 10
+  start_period: 10s
 
 services:
   redis:
     image: redis:7-alpine
     ports:
       - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
-  # Optional: Langfuse observability stack
+  # Optional: Langfuse observability
   postgres:
     image: postgres:15-alpine
     environment:
@@ -14,6 +26,11 @@ services:
       - POSTGRES_DB=langfuse
     ports:
       - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d langfuse"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
 
   langfuse:
     image: ghcr.io/langfuse/langfuse:latest
@@ -22,53 +39,151 @@ services:
       - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/langfuse
       - NEXTAUTH_SECRET=devsecret
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
     ports:
       - "3000:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000 >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
 
   ingest:
     build: ../services/ingest
+    env_file:
+      - ./.env
     environment:
-      - CACHE_ENABLED=false
+      - REDIS_URL=${REDIS_URL}
+      - CACHE_ENABLED=${CACHE_ENABLED}
+      - LANGFUSE_ENABLED=${LANGFUSE_ENABLED}
+      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY}
+      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY}
+      - LANGFUSE_HOST=${LANGFUSE_HOST}
+      - OFFLINE_MODE=${OFFLINE_MODE}
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
     ports:
       - "8001:8000"
+    healthcheck: *health_tcp
 
   embeddings:
     build: ../services/embeddings
+    env_file:
+      - ./.env
+    environment:
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL}
+      - LANGFUSE_ENABLED=${LANGFUSE_ENABLED}
+      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY}
+      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY}
+      - LANGFUSE_HOST=${LANGFUSE_HOST}
+      - OFFLINE_MODE=${OFFLINE_MODE}
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
     ports:
       - "8002:8000"
+    healthcheck: *health_tcp
 
   retrieval:
     build: ../services/retrieval
+    env_file:
+      - ./.env
+    environment:
+      - REDIS_URL=${REDIS_URL}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL}
+      - VECTOR_STORE=${VECTOR_STORE}
+      - FAISS_INDEX_PATH=${FAISS_INDEX_PATH}
+      - DOC_MAP_PATH=${DOC_MAP_PATH}
+      - FAISS_METRIC=${FAISS_METRIC}
+      - FAISS_NORMALIZE=${FAISS_NORMALIZE}
+      - LANGFUSE_ENABLED=${LANGFUSE_ENABLED}
+      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY}
+      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY}
+      - LANGFUSE_HOST=${LANGFUSE_HOST}
+      - OFFLINE_MODE=${OFFLINE_MODE}
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
     ports:
       - "8003:8000"
+    healthcheck: *health_tcp
 
+  # Compose targets the dash folder (implemented)
   llm_generate:
-    build: ../services/llm-generate
+    build: ../services/llm_generate
+    env_file:
+      - ./.env
+    environment:
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - LANGFUSE_ENABLED=${LANGFUSE_ENABLED}
+      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY}
+      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY}
+      - LANGFUSE_HOST=${LANGFUSE_HOST}
+      - OFFLINE_MODE=${OFFLINE_MODE}
+      - GEMINI_FAST_MODEL=${GEMINI_FAST_MODEL}
+      - GEMINI_REASONING_MODEL=${GEMINI_REASONING_MODEL}
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
     ports:
       - "8004:8000"
+    healthcheck: *health_tcp
 
   evaluation:
     build: ../services/evaluation
+    env_file:
+      - ./.env
+    environment:
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - LANGFUSE_ENABLED=${LANGFUSE_ENABLED}
+      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY}
+      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY}
+      - LANGFUSE_HOST=${LANGFUSE_HOST}
+      - OFFLINE_MODE=${OFFLINE_MODE}
+      - EVAL_LLM_ENABLED=${EVAL_LLM_ENABLED}
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
     ports:
       - "8005:8000"
+    healthcheck: *health_tcp
 
   api_gateway:
     build: ../services/api-gateway
+    env_file:
+      - ./.env
+    environment:
+      - REDIS_URL=${REDIS_URL}
+      - CACHE_ENABLED=${CACHE_ENABLED}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - CONFIDENCE_THRESHOLD=${CONFIDENCE_THRESHOLD}
+      - ANSWER_CACHE_TTL_SECONDS=${ANSWER_CACHE_TTL_SECONDS}
+      - SUMMARY_CACHE_TTL_SECONDS=${SUMMARY_CACHE_TTL_SECONDS}
+      - SEMANTIC_CACHE_THRESHOLD=${SEMANTIC_CACHE_THRESHOLD}
+      - RATE_LIMIT_PER_MINUTE=${RATE_LIMIT_PER_MINUTE}
+      - LANGFUSE_ENABLED=${LANGFUSE_ENABLED}
+      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY}
+      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY}
+      - LANGFUSE_HOST=${LANGFUSE_HOST}
+      - OFFLINE_MODE=${OFFLINE_MODE}
+      - RERANKER_BACKEND=${RERANKER_BACKEND}
+      - RERANKER_MODEL=${RERANKER_MODEL}
+      - RERANK_THRESHOLD=${RERANK_THRESHOLD}
+      - QUERY_REFINE_ENABLED=${QUERY_REFINE_ENABLED}
+      - SUMMARIZER_MAX_CHUNKS=${SUMMARIZER_MAX_CHUNKS}
+      - EVAL_LLM_ENABLED=${EVAL_LLM_ENABLED}
     depends_on:
-      - ingest
-      - retrieval
-      - llm_generate
-      - evaluation
+      ingest:
+        condition: service_healthy
+      retrieval:
+        condition: service_healthy
+      llm_generate:
+        condition: service_healthy
+      evaluation:
+        condition: service_healthy
     ports:
       - "8000:8000"
+    healthcheck: *health_tcp
