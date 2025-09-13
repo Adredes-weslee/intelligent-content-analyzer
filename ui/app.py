@@ -1,4 +1,5 @@
 import hashlib
+import os
 
 import pandas as pd
 import requests
@@ -6,7 +7,6 @@ import streamlit as st
 
 st.set_page_config(page_title="Intelligent Content Analyzer", layout="wide")
 
-# Make primary buttons (incl. form submit) larger
 st.markdown(
     """
     <style>
@@ -29,17 +29,16 @@ st.markdown(
 
 # ---- Session state defaults ----
 for k, v in {
-    "api_url": "http://localhost:8000",
     "restrict_last_doc": True,
     "show_raw": False,
-    "show_debug": False,  # gate for diagnostics expander
-    "use_judge": False,  # default off to save latency
+    "show_debug": False,
+    "use_judge": False,
     "dense_candidates": 50,
     "doc_id": None,
     "qa_result": None,
     "summary": None,
-    "docs": [],  # [{doc_id, name, size, type, hash}]
-    "doc_index": {},  # sha1 -> entry
+    "docs": [],
+    "doc_index": {},
 }.items():
     st.session_state.setdefault(k, v)
 
@@ -56,9 +55,15 @@ def _fmt_size(n: int) -> str:
 
 # ---- Sidebar ----
 st.sidebar.header("Settings")
-API_URL = st.sidebar.text_input(
-    "API URL", key="api_url", value=st.session_state["api_url"]
+default_api = (
+    st.secrets.get("API_URL")
+    or os.environ.get("API_URL")
+    or st.session_state.get("api_url", "http://localhost:8000")
 )
+if "api_url" not in st.session_state:
+    st.session_state["api_url"] = default_api
+
+API_URL = st.sidebar.text_input("API URL", key="api_url", value=default_api)
 restrict_to_last_doc = st.sidebar.checkbox(
     "Restrict questions to last uploaded doc",
     key="restrict_last_doc",
@@ -88,7 +93,7 @@ if st.session_state.get("docs"):
 
         rows = []
         seen_ids = set()
-        for d in reversed(st.session_state["docs"]):  # newest first
+        for d in reversed(st.session_state["docs"]):
             did = d["doc_id"]
             if did in seen_ids:
                 continue
@@ -150,7 +155,7 @@ if uploaded_files and st.button("Upload", key="btn_upload"):
             if resp.ok:
                 data = resp.json()
                 doc_id = data.get("doc_id")
-                st.session_state["doc_id"] = doc_id  # keep last as active
+                st.session_state["doc_id"] = doc_id
                 entry = {
                     "doc_id": doc_id,
                     "name": f.name,
@@ -353,8 +358,7 @@ with st.form("qa_form", clear_on_submit=False):
             help="Number of top results pulled from the vector index before fusion. Higher = better recall, slower.",
         )
 
-    # Full-width primary submit button
-    st.markdown("")  # line break
+    st.markdown("")
     submitted = st.form_submit_button("Ask", type="primary")
 
 if submitted:
@@ -381,7 +385,6 @@ if submitted:
     except Exception as e:
         st.error(f"Request error: {e}")
 
-# Always show last QA result
 if st.session_state.get("qa_result"):
     render_qa(st.session_state["qa_result"])
 
