@@ -6,7 +6,8 @@ This module returns dense vectors for input texts with the following strategy:
 - Else if a Gemini API key is configured, call Gemini's embed_content API.
   A simple batching path is attempted first; it gracefully falls back to
   per-item calls if batching is unsupported or fails.
-- Otherwise, generate random vectors with NumPy as a last resort.
+- Otherwise, generate deterministic vectors from SHA-256 (not random), so
+  repeated calls for the same text are identical.
 
 Details:
 - Default output dimensionality follows Settings.embedding_dim (fallback: 128).
@@ -34,6 +35,9 @@ _GEMINI_EMBED_MODEL = settings.embedding_model
 genai = None
 if _GEMINI_API_KEY and not settings.offline_mode:
     try:
+        # For the newer Google GenAI SDK:
+        #   pip install google-genai
+        #   from google import genai
         from google import genai  # type: ignore
 
         genai.configure(api_key=_GEMINI_API_KEY)
@@ -42,8 +46,10 @@ if _GEMINI_API_KEY and not settings.offline_mode:
 
 
 def _deterministic_embed(text: str, dim: int = 768) -> List[float]:
-    h = hashlib.sha256(text.encode("utf-8")).digest()
+    """Deterministic byte-based embedding from SHA-256, length = dim."""
+    h = hashlib.sha256((text or "").encode("utf-8")).digest()
     buf = (h * ((dim // len(h)) + 1))[:dim]
+    # Values in [0, 1]; stable across runs
     return [b / 255.0 for b in buf]
 
 
@@ -54,12 +60,14 @@ def embed_texts(
     Return embeddings for texts.
     - If Settings.offline_mode: deterministic vectors with requested dim (or settings.embedding_dim).
     - If GEMINI available: request output_dimensionality=dim and use batch API when available.
-    - Else: random normalized vectors.
+      On any failure, fall back to deterministic embeddings (not random).
+    - Else: deterministic embeddings.
     """
     global genai
     s = settings
     target_dim = int(dim or s.embedding_dim or 768)
 
+    # Strictly deterministic in offline mode
     if s.offline_mode:
         return [_deterministic_embed(t, target_dim) for t in texts]
 
@@ -75,6 +83,7 @@ def embed_texts(
             out: List[List[float]] = []
             bsz = max(1, int(batch_size or 16))
             try:
+                # Batch if supported
                 if hasattr(genai, "batch_embed_contents") and bsz > 1:
                     for i in range(0, len(texts), bsz):
                         chunk = texts[i : i + bsz]
@@ -110,6 +119,7 @@ def embed_texts(
                             else:
                                 raise ValueError("Unexpected batch response shape")
                         except Exception:
+                            # Deterministic per-item fallback
                             for t in chunk:
                                 try:
                                     single = genai.embed_content(
@@ -141,15 +151,10 @@ def embed_texts(
                                         raise ValueError("No embedding in response")
                                     out.append([float(x) for x in vec])
                                 except Exception:
-                                    import random
-
-                                    v = [
-                                        random.uniform(-1, 1) for _ in range(target_dim)
-                                    ]
-                                    n = sum(x * x for x in v) ** 0.5 or 1.0
-                                    out.append([x / n for x in v])
+                                    out.append(_deterministic_embed(t, target_dim))
                     return out
                 else:
+                    # Single-call path
                     for t in texts:
                         try:
                             single = genai.embed_content(
@@ -179,20 +184,11 @@ def embed_texts(
                                 raise ValueError("No embedding in response")
                             out.append([float(x) for x in vec])
                         except Exception:
-                            import random
-
-                            v = [random.uniform(-1, 1) for _ in range(target_dim)]
-                            n = sum(x * x for x in v) ** 0.5 or 1.0
-                            out.append([x / n for x in v])
+                            out.append(_deterministic_embed(t, target_dim))
                     return out
             except Exception:
+                # Fall through to deterministic below
                 pass
 
-    import random
-
-    out: List[List[float]] = []
-    for _t in texts:
-        v = [random.uniform(-1, 1) for _ in range(target_dim)]
-        n = sum(x * x for x in v) ** 0.5 or 1.0
-        out.append([x / n for x in v])
-    return out
+    # Deterministic final fallback (no provider)
+    return [_deterministic_embed(t, target_dim) for t in texts]
