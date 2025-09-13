@@ -1,20 +1,26 @@
-"""Entry point for the embeddings microservice.
+"""Embeddings microservice.
 
-This service exposes a simple endpoint for converting document chunks
-into dense vectors. In a production system you would integrate with a
-state of the art embedding model such as OpenAI's `text-embedding-ada-002`
-or Hugging Face's sentence transformers. Here we generate random
-vectors to demonstrate the API contract.
+Exposes /embed to convert a list of DocChunk texts into dense vectors.
+Behavior:
+- Delegates to services.embeddings.app.embeddings.embed_texts, which uses:
+  - deterministic vectors in offline mode,
+  - Gemini embeddings when configured,
+  - or random vectors as a fallback.
+- Returns vectors and the configured embedding model name in EmbedResponse.
+
+This service keeps no state and performs no storage; clients are expected
+to persist vectors elsewhere if needed.
 """
 
 from __future__ import annotations
 
 from fastapi import FastAPI
-import numpy as np
 
 from shared.models import EmbedRequest, EmbedResponse
 from shared.settings import Settings
+from shared.tracing import log_event, span
 
+from .embeddings import embed_texts
 
 settings = Settings()
 app = FastAPI(title="Embeddings Service", version="0.1.0")
@@ -30,6 +36,16 @@ async def embed(request: EmbedRequest) -> EmbedResponse:
     Returns:
         An object containing a list of vectors and the model name.
     """
-    dim = 128  # fixed embedding dimensionality for demonstration
-    vectors = [np.random.rand(dim).tolist() for _ in request.chunks]
+    texts = [c.text for c in request.chunks]
+    with span("embeddings.embed", num_texts=len(texts), model=settings.embedding_model):
+        vectors = embed_texts(texts)
+    log_event(
+        "Embedding",
+        payload={
+            "num_texts": len(texts),
+            "model": settings.embedding_model,
+            "dim": len(vectors[0]) if vectors else 0,
+        },
+        correlation_id=None,
+    )
     return EmbedResponse(vectors=vectors, model=settings.embedding_model)
