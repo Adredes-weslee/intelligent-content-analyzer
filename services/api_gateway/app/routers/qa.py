@@ -88,7 +88,6 @@ async def _refine_query(original: str) -> Optional[str]:
             ]
         )
         text = getattr(resp, "text", "") or ""
-        # Heuristic: pick the first non-empty line as the refined query
         for line in text.splitlines():
             candidate = line.strip(" -•\t").strip()
             if candidate and len(candidate) > 3:
@@ -104,7 +103,6 @@ async def _expand_queries(original: str) -> List[str]:
     refined = await _refine_query(original)
     if refined and refined not in variants:
         variants.append(refined)
-    # Best-effort extra variants if LLM present
     if _genai is not None and _settings.query_refine_enabled:
         try:
             model = _genai.GenerativeModel(_settings.gemini_fast_model)
@@ -155,11 +153,10 @@ async def _translate(text: str, target_lang: str) -> Optional[str]:
 @router.post("/ask_question", response_model=QAResponse)
 async def ask_question(request: QARequest) -> QAResponse:
     """Answer a user's question using indexed document content."""
-    # Generate a correlation id for observability across services
     correlation_id = str(uuid.uuid4())
     index_version = get_index_version()
 
-    # Basic rate limit per normalized question
+    # Rate limit per normalized question
     if _settings.rate_limit_enabled:
         norm = _canonicalize_query(request.question)
         rl_key = f"rl:qpm:{norm}"
@@ -176,12 +173,13 @@ async def ask_question(request: QARequest) -> QAResponse:
             pass
 
     # Cache lookup
-
     exact_key = f"qa:v={index_version}:{_canonicalize_query(request.question)}:k={request.k}:rr={request.use_rerank}"
     sem_key = f"{semantic_key(request.question)}:v={index_version}"
-    cached = None
-    if _settings.cache_enabled:
-        cached = _cache.get(exact_key) or _cache.get(sem_key)
+    cached = (
+        _cache.get(exact_key) or _cache.get(sem_key)
+        if _settings.cache_enabled
+        else None
+    )
     if cached:
         return QAResponse(**cached)
 
@@ -230,8 +228,7 @@ async def ask_question(request: QARequest) -> QAResponse:
     # AF6: Multi-variant refinement union with optional re-rank
     if top_score < _settings.rerank_threshold:
         variants = await _expand_queries(request.question)
-        union_hits = []
-        seen_ids = set()
+        union_hits, seen_ids = [], set()
         for q2 in variants:
             with span("qa.retrieve_refined", refined=True, corr=correlation_id, q=q2):
                 retrieve_req2 = RetrieveRequest(
@@ -267,16 +264,14 @@ async def ask_question(request: QARequest) -> QAResponse:
     # AF5: Translation fallback (question -> dominant doc language) if still low
     if top_score < _settings.rerank_threshold and _genai is not None:
         q_lang = _detect_lang(request.question)
-        # Majority language among top hits (by meta.lang if present)
         counts = {}
         for h in hits[: max(5, request.k)]:
-            # meta may be a pydantic object or dict; support both
             meta = getattr(h.chunk, "meta", None)
-            doc_lang = None
-            if isinstance(meta, dict):
-                doc_lang = meta.get("lang")
-            else:
-                doc_lang = getattr(meta, "lang", None)
+            doc_lang = (
+                meta.get("lang")
+                if isinstance(meta, dict)
+                else getattr(meta, "lang", None)
+            )
             if doc_lang:
                 counts[doc_lang] = counts.get(doc_lang, 0) + 1
         dom_lang = max(counts, key=counts.get) if counts else None
@@ -313,7 +308,6 @@ async def ask_question(request: QARequest) -> QAResponse:
                     top_score = float(hits[0].score or 0.0)
 
     if top_score < _settings.rerank_threshold:
-        # Abstain early on low retrieval confidence
         resp = QAResponse(
             answer="Sorry, I couldn’t find relevant information to answer confidently.",
             citations=[],
@@ -344,10 +338,9 @@ async def ask_question(request: QARequest) -> QAResponse:
                     if cached_sem:
                         return QAResponse(**cached_sem)
             except Exception:
-                # Best-effort semantic cache; continue on errors
                 pass
 
-    # Step 3: assemble structured context and call generator
+    # Step 3: generation
     with span("qa.generate", corr=correlation_id):
         top_chunks = [h.chunk for h in hits[: request.k]]
         gen_req = GenerateRequest(
@@ -355,48 +348,35 @@ async def ask_question(request: QARequest) -> QAResponse:
             context_chunks=top_chunks,
             correlation_id=correlation_id,
         )
-        gen_resp = await llm_generate(gen_req)  # returns QAResponse
+        gen_resp = await llm_generate(gen_req)
         answer_text = gen_resp.answer
 
-    # Step 4: evaluation (service call with extended metrics)
+    # Step 4: evaluation
     with span("qa.evaluate", corr=correlation_id):
-        # Call local service module directly to avoid HTTP hop
-        from services.evaluation.app.main import (
-            evaluate as eval_endpoint,  # local import
-        )
+        from services.evaluation.app.main import evaluate as eval_endpoint
 
         ereq = EvaluateRequest(
             question=request.question,
             answer=answer_text,
             sources=[hit.chunk for hit in hits],
             hits=hits,
+            use_judge=request.use_judge,
         )
         eresp = await eval_endpoint(ereq)
         eval_scores = {
             "factuality": eresp.factuality,
             "relevance": eresp.relevance,
             "completeness": eresp.completeness,
-            # expose extended metrics for diagnostics/confidence tuning
-            "faithfulness": eresp.faithfulness
-            if eresp.faithfulness is not None
-            else 0.0,
-            "answer_relevance_1_5": eresp.answer_relevance_1_5
-            if eresp.answer_relevance_1_5 is not None
-            else 0.0,
-            "context_relevance_ratio": eresp.context_relevance_ratio
-            if eresp.context_relevance_ratio is not None
-            else 0.0,
+            "faithfulness": eresp.faithfulness or 0.0,
+            "answer_relevance_1_5": eresp.answer_relevance_1_5 or 0.0,
+            "context_relevance_ratio": eresp.context_relevance_ratio or 0.0,
         }
-        # Emit evaluation event for observability
         log_event("Evaluation", payload=eval_scores, correlation_id=correlation_id)
 
-    # Step 5: compute confidence (using judge_scores support)
-    from services.evaluation.app.confidence import compute_confidence  # local import
+    # Step 5: confidence
+    from services.evaluation.app.confidence import compute_confidence
 
-    # Judge payload may not be present; derive a proxy from faithfulness and answer_relevance_1_5
-    judge_scores = {
-        "faithfulness": float(eval_scores.get("faithfulness", 0.0) or 0.0),
-    }
+    judge_scores = {"faithfulness": float(eval_scores.get("faithfulness", 0.0) or 0.0)}
     try:
         ar15 = eval_scores.get("answer_relevance_1_5")
         if ar15 is not None:
@@ -404,18 +384,9 @@ async def ask_question(request: QARequest) -> QAResponse:
     except Exception:
         pass
 
-    # Retrieval aggregates from current hit list
     retrieval_top = float(hits[0].score or 0.0)
     used_hits = hits[
-        : max(
-            1,
-            min(
-                len(hits),
-                _settings.summarizer_max_chunks
-                if hasattr(_settings, "summarizer_max_chunks")
-                else request.k,
-            ),
-        )
+        : max(1, min(len(hits), getattr(_settings, "summarizer_max_chunks", request.k)))
     ]
     retrieval_mean = float(sum(float(h.score or 0.0) for h in used_hits)) / max(
         1, len(used_hits)
@@ -451,33 +422,84 @@ async def ask_question(request: QARequest) -> QAResponse:
             _cache.set(sem_key, resp.dict(), ttl=ttl)
         return resp
 
-    # Build citations (prefer generator; fallback to top chunks)
-    citations: list[Citation] = (
-        gen_resp.citations
-        if gen_resp.citations
-        else [
-            Citation(
-                doc_id=h.chunk.doc_id,
-                page=h.chunk.meta.page,
-                section=h.chunk.meta.section,
+    # Build enriched citations from top hits (prefer generator later if it supplies more)
+    enriched: list[Citation] = []
+    for h in hits[: request.k]:
+        ch = h.chunk
+        meta = getattr(ch, "meta", None)
+        file_name = None
+        page = None
+        section = None
+        if isinstance(meta, dict):
+            file_name = (
+                meta.get("file_name")
+                or meta.get("filename")
+                or meta.get("source_name")
+                or meta.get("title")
             )
-            for h in hits[: request.k]
-        ]
-    )
+            page = meta.get("page")
+            section = meta.get("section")
+        else:
+            file_name = (
+                getattr(meta, "file_name", None)
+                or getattr(meta, "filename", None)
+                or getattr(meta, "source_name", None)
+                or getattr(meta, "title", None)
+            )
+            page = getattr(meta, "page", None)
+            section = getattr(meta, "section", None)
+        text = (getattr(ch, "text", "") or "").strip()
+        snippet = (text[:300] + "…") if text and len(text) > 300 else (text or None)
 
-    # Build fingerprint and semantic cache key (reuse fp from lookup)
+        enriched.append(
+            Citation(
+                doc_id=getattr(ch, "doc_id", None),
+                page=page,
+                section=section,
+                # extras (optional in model)
+                chunk_id=getattr(ch, "id", None),
+                file_name=file_name,
+                snippet=snippet,
+                score=float(getattr(h, "score", 0.0) or 0.0),
+            )
+        )
+
+    # If generator returned citations, prefer them and merge extras if missing
+    if getattr(gen_resp, "citations", None):
+        try:
+            # best-effort merge: keep generator minimal fields, attach extras by index
+            gen_cits = []
+            for base, extra in zip(gen_resp.citations[: request.k], enriched):
+                gen_cits.append(
+                    Citation(
+                        doc_id=getattr(base, "doc_id", extra.doc_id),
+                        page=getattr(base, "page", extra.page),
+                        section=getattr(base, "section", extra.section),
+                        chunk_id=extra.chunk_id,
+                        file_name=extra.file_name,
+                        snippet=extra.snippet,
+                        score=extra.score,
+                    )
+                )
+            enriched = gen_cits
+        except Exception:
+            pass
+
+    # Fingerprint and semantic cache key
     fp_key = f"qa2:v={index_version}:{_canonicalize_query(request.question)}:fp={fp}:k={request.k}:rr={request.use_rerank}"
     sem_cache = get_semantic_cache()
 
     resp = QAResponse(
         answer=answer_text,
-        citations=citations,
+        citations=enriched,
         confidence=confidence,
         diagnostics={
             "eval": eval_scores,
             "retrieval": {
                 "num_hits": len(hits),
-                "top_scores": [round(h.score, 4) for h in hits[: request.k]],
+                "top_scores": [
+                    round(float(h.score or 0.0), 4) for h in hits[: request.k]
+                ],
                 "diagnostics": getattr(retrieve_resp, "diagnostics", None),
             },
             "correlation_id": correlation_id,
@@ -498,12 +520,7 @@ async def ask_question(request: QARequest) -> QAResponse:
 
 @router.post("/feedback", response_model=FeedbackAck)
 async def submit_feedback(request: FeedbackRequest) -> FeedbackAck:
-    """Capture end-user feedback and log an observability event.
-
-    Stores feedback in the default cache for analytics and emits a Feedback
-    structured event. Feedback is keyed by a generated id and retained for a
-    limited duration.
-    """
+    """Capture end-user feedback and log an observability event."""
     fid = str(uuid.uuid4())
     record = {
         "id": fid,
