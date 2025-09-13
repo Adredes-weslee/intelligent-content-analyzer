@@ -94,23 +94,19 @@ async def upload_document(request: Request) -> JSONResponse:
     boundary_marker = "boundary="
     if boundary_marker not in content_type:
         raise HTTPException(status_code=400, detail="Missing multipart boundary")
-    # Sanitize boundary (handles quotes and extra params like ;charset=…)
     boundary = (
         content_type.split(boundary_marker, 1)[1].split(";", 1)[0].strip().strip('"')
     )
     body = await request.body()
     file_bytes = None
     filename = "uploaded"
-    # Split body by boundary delimiter, ignoring preamble/epilogue
     delimiter = b"--" + boundary.encode()
     parts = body.split(delimiter)
     for part in parts:
         if b"Content-Disposition" in part and b'name="file"' in part:
             header, _, data_section = part.partition(b"\r\n\r\n")
-            # Remove trailing CRLF (the part ends with CRLF)
             data = data_section.rsplit(b"\r\n", 1)[0]
             header_str = header.decode(errors="ignore")
-            # Robust filename extraction (quoted or unquoted)
             import re as _re
 
             m_fn = _re.search(
@@ -125,9 +121,7 @@ async def upload_document(request: Request) -> JSONResponse:
             break
     if not file_bytes:
         raise HTTPException(status_code=400, detail="No file part provided")
-    # Compute checksum for idempotency
     checksum = hashlib.sha256(file_bytes).hexdigest()
-    # If checksum seen before, return original doc_id (idempotent)
     existing_doc = lookup_by_checksum(checksum)
     if existing_doc:
         return JSONResponse(
@@ -135,11 +129,9 @@ async def upload_document(request: Request) -> JSONResponse:
         )
     with span("gateway.upload.parse_and_chunk", filename=filename):
         raw_text = parse_document(file_bytes, filename)
-        # Upsert flow: if filename exists with different checksum, remove old chunks
         file_entry = lookup_file(filename)
         doc_id = file_entry["doc_id"] if file_entry else str(uuid.uuid4())
         previous_chunk_ids = file_entry.get("chunks", []) if file_entry else []
-        # Language detection per document
         try:
             lang = detect(raw_text)[:2]
         except Exception:
@@ -181,7 +173,6 @@ async def upload_document(request: Request) -> JSONResponse:
                 chunks.append(
                     DocChunk(id=f"{doc_id}_{idx}", doc_id=doc_id, text=text, meta=meta)
                 )
-    # If upserting, remove previous chunks first
     if previous_chunk_ids and _settings.enable_upsert:
         try:
             remove_chunks_by_ids(previous_chunk_ids)
@@ -191,7 +182,6 @@ async def upload_document(request: Request) -> JSONResponse:
             faiss_remove_chunks(previous_chunk_ids)
         except Exception:
             pass
-    # Register chunks in retrieval index (adds dense vectors as well) and track doc
     add_chunks(chunks)
     chunk_ids = [c.id for c in chunks]
     try:
@@ -201,7 +191,6 @@ async def upload_document(request: Request) -> JSONResponse:
             track_doc(filename, doc_id, checksum, chunk_ids)
     except Exception:
         pass
-        # Bump index version to invalidate QA caches namespaced by version
     try:
         bump_index_version()
     except Exception:

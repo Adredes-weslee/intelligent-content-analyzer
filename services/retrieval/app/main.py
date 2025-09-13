@@ -48,18 +48,14 @@ from .faiss_store import search as faiss_search
 app = FastAPI(title="Retrieval Service", version="0.1.0")
 install_fastapi_tracing(app, service_name="retrieval")
 
-# In‑memory list of indexed chunks
 INDEX: List[DocChunk] = []
-# Parallel dense vectors and lookup by chunk id
 DENSE_VECTORS: List[List[float]] = []
 VEC_BY_CHUNK_ID: Dict[str, List[float]] = {}
-CHUNK_BY_ID: Dict[str, DocChunk] = {}  # id -> DocChunk
+CHUNK_BY_ID: Dict[str, DocChunk] = {}
 
-# Initialize FAISS index (no-op if faiss not installed)
 init_index()
 
 
-# Debug/status endpoint
 @app.get("/_status")
 def _status():
     return {
@@ -127,7 +123,7 @@ def _load_chunks_from_store() -> None:
         m = json.load(open(p, encoding="utf-8"))
         stored = m.get("chunks", {})
         CHUNK_BY_ID = {cid: DocChunk(**payload) for cid, payload in stored.items()}
-        INDEX.clear()  # mutate in place
+        INDEX.clear()
         INDEX.extend(CHUNK_BY_ID.values())
     except Exception:
         INDEX.clear()
@@ -152,13 +148,11 @@ def _save_chunks_to_store(chunks: List[DocChunk]) -> None:
         with p.open("w", encoding="utf-8") as f:
             json.dump(m, f)
     except Exception:
-        # best-effort persistence
         pass
 
 
 @app.on_event("startup")
 def _warm_start() -> None:
-    # Ensure FAISS index is initialized and rehydrate chunk corpus
     try:
         init_index(dim=get_index_dim())
     except Exception:
@@ -171,14 +165,11 @@ def add_chunks(chunks: List[DocChunk]) -> int:
     if not chunks:
         return 0
     texts = [c.text for c in chunks]
-    # Embed with FAISS-consistent dimension
     vecs = embed_texts(texts, batch_size=16, dim=get_index_dim())
     count = 0
-    # Upsert into FAISS vector store for persistence
     try:
         upsert_vectors([c.id for c in chunks], vecs)
     except Exception:
-        # best-effort; continue with in-memory only
         pass
     for c, v in zip(chunks, vecs):
         INDEX.append(c)
@@ -186,7 +177,6 @@ def add_chunks(chunks: List[DocChunk]) -> int:
         DENSE_VECTORS.append(nv)
         VEC_BY_CHUNK_ID[c.id] = nv
         count += 1
-    # Persist chunk payloads so they survive restarts
     try:
         _save_chunks_to_store(chunks)
     except Exception:
@@ -255,7 +245,6 @@ async def search(req: RetrieveRequest) -> RetrieveResponse:
     retrieval computes cosine similarity against stored vectors. When
     hybrid=True we blend: 0.5*bm25 + 0.5*dense.
     """
-    # Tokenize query
     query_tokens = _tokens(req.query)
     candidates: List[DocChunk] = [
         c for c in INDEX if _allow_chunk(getattr(req, "filters", None), c)
@@ -263,16 +252,13 @@ async def search(req: RetrieveRequest) -> RetrieveResponse:
     if not query_tokens or not candidates:
         return RetrieveResponse(hits=[])
 
-    # Precompute corpus statistics over filtered candidates
     doc_terms: List[List[str]] = [_tokens(c.text) for c in candidates]
     doc_lens: List[int] = [max(1, len(ts)) for ts in doc_terms]
     avgdl = sum(doc_lens) / len(doc_lens)
     N = len(candidates)
 
-    # BM25 parameters
     k1, b = 1.5, 0.75
 
-    # Document frequency for each unique term in query
     unique_q = set(query_tokens)
     df = {t: sum(1 for terms in doc_terms if t in set(terms)) for t in unique_q}
     idf = {
@@ -280,11 +266,9 @@ async def search(req: RetrieveRequest) -> RetrieveResponse:
         for t in unique_q
     }
 
-    # Compute query embedding for dense retrieval (normalized), using FAISS dim
     q_vecs = embed_texts([req.query], dim=get_index_dim())
     qv = _normalize([float(x) for x in q_vecs[0]]) if q_vecs else []
 
-    # If hybrid, prefetch dense scores from FAISS so searches work after restarts
     faiss_scores: Dict[str, float] = {}
     if getattr(req, "hybrid", False) and qv:
         try:
@@ -300,7 +284,6 @@ async def search(req: RetrieveRequest) -> RetrieveResponse:
         terms = doc_terms[i]
         dl = doc_lens[i]
         bm25_score = 0.0
-        # term frequency in this document
         for t in unique_q:
             tf = terms.count(t)
             if tf == 0:
@@ -308,7 +291,6 @@ async def search(req: RetrieveRequest) -> RetrieveResponse:
             numerator = tf * (k1 + 1.0)
             denominator = tf + k1 * (1.0 - b + b * (dl / avgdl))
             bm25_score += idf[t] * (numerator / denominator)
-        # Dense cosine similarity using stored vectors; fallback to FAISS score
         cv = VEC_BY_CHUNK_ID.get(chunk.id)
         dense_score = _cosine(qv, cv) if cv else faiss_scores.get(chunk.id, 0.0)
         final_score = (

@@ -27,19 +27,15 @@ def simple_metric_scores(
     Returns:
         A tuple of three floats in the range [0,1].
     """
-    # Concatenate source text for containment checks
     combined = " ".join(chunk.text.lower() for chunk in sources)
     ans_lower = answer.lower()
-    # Factuality: 1 if every word in answer appears in sources, else 0
     if not ans_lower.strip():
         factuality = 0.0
     else:
         answer_terms = set(ans_lower.split())
         combined_terms = set(combined.split())
         factuality = 1.0 if answer_terms.issubset(combined_terms) else 0.0
-    # Relevance: 1 if answer contains any word from sources, else 0
     relevance = 1.0 if any(word in combined for word in ans_lower.split()) else 0.0
-    # Completeness: 1 if answer is non-empty, else 0
     completeness = 1.0 if ans_lower.strip() else 0.0
     return factuality, relevance, completeness
 
@@ -49,7 +45,6 @@ def _sentences(text: str) -> List[str]:
     parts = []
     for sep in [". ", "? ", "! "]:
         if sep in text:
-            # progressively split by separators
             if not parts:
                 parts = text.split(sep)
             else:
@@ -93,7 +88,6 @@ def heuristic_answer_relevance_1_5(question: str, answer: str) -> float:
     if not a:
         return 1.0
     overlap = len(q & a) / max(1, len(q))
-    # Map overlap in [0,1] to [1,5]
     return 1.0 + 4.0 * max(0.0, min(1.0, overlap))
 
 

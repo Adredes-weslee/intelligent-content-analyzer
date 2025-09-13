@@ -56,7 +56,6 @@ def parse_document(content: bytes, filename: str) -> str:
     """
     name = filename.lower()
     ext = os.path.splitext(name)[1]
-    # Size guard
     max_mb = _settings.ingest_max_file_mb
     if max_mb and len(content) > max_mb * 1024 * 1024:
         content = content[: max_mb * 1024 * 1024]
@@ -75,7 +74,6 @@ def parse_document(content: bytes, filename: str) -> str:
         return _parse_csv(content)
     if ext in {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tiff"}:
         return _parse_image(content)
-    # Fallback: decode as text
     try:
         return content.decode("utf-8", errors="replace")
     except Exception:
@@ -112,12 +110,10 @@ def _parse_pdf(content: bytes) -> str:
                 for ti, tbl in enumerate(tables or []):
                     if not tbl:
                         continue
-                    # Emit explicit table markers with stable identifier
                     table_id = f"p{page_idx + 1}_t{ti + 1}"
                     if _settings.normalize_tables_to_csv:
                         csv_text = _table_to_csv(tbl)
                     else:
-                        # Legacy TSV-like format
                         csv_lines = []
                         for row in tbl:
                             if row:
@@ -132,7 +128,6 @@ def _parse_pdf(content: bytes) -> str:
             block = text.strip()
             if tables_text:
                 block += "\n" + "\n".join(tables_text)
-            # Optional OCR/caption via Gemini on rendered page image
             if _settings.pdf_render_images and _GEMINI_ENABLE_MM and genai is not None:
                 try:
                     pil = page.to_image(resolution=150).original
@@ -203,7 +198,6 @@ def _parse_docx(content: bytes) -> str:
 
         doc = Document(io.BytesIO(content))
         paras = [p.text for p in doc.paragraphs if p.text and p.text.strip()]
-        # Tables
         for tbl in doc.tables:
             for row in tbl.rows:
                 paras.append("\t".join(cell.text.strip() for cell in row.cells))
@@ -244,10 +238,8 @@ def _parse_pptx(content: bytes) -> str:
 
 def _parse_html(content: bytes) -> str:
     soup = BeautifulSoup(content, "html5lib")
-    # Remove scripts/styles
     for tag in soup(["script", "style", "noscript"]):
         tag.decompose()
-    # Extract headings and text in a simple order
     lines: list[str] = []
     for el in soup.find_all(
         ["h1", "h2", "h3", "h4", "h5", "h6", "p", "li", "td", "th"]
@@ -260,8 +252,6 @@ def _parse_html(content: bytes) -> str:
 
 def _parse_markdown(content: bytes) -> str:
     text = content.decode("utf-8", errors="replace")
-    # For now, return the raw markdown text; tokenization could help later
-    # Optionally we could render to HTML and then extract text
     return text
 
 
@@ -295,10 +285,8 @@ def _gemini_image_to_text(pil_image: Image.Image) -> str:
     if genai is None:
         return ""
     try:
-        # Use fast model by default for cost; allow config to switch
         model_name = _GEMINI_FAST or "gemini-2.5-flash"
         model = genai.GenerativeModel(model_name)
-        # Gemini Python SDK accepts PIL images directly in parts
         prompt = "Describe or transcribe the image succinctly. Include visible text exactly when present."
         resp = model.generate_content([pil_image, prompt])
         return getattr(resp, "text", "") or ""

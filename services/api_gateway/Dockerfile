@@ -6,11 +6,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# Install deps (CPU wheels for torch via extra index in requirements.txt)
 COPY requirements.txt /tmp/requirements.txt
 RUN python -m pip install --upgrade pip && pip install -r /tmp/requirements.txt
 
-# Copy code
 COPY services/api_gateway/app /app/app
 COPY shared /app/shared
 

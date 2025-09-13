@@ -103,10 +103,10 @@ def _map_bracket_citations(answer_text: str) -> List[int]:
         try:
             n = int(m.group(1))
             if n >= 1:
-                idxs.append(n - 1)  # zero-based
+                idxs.append(n - 1)
         except Exception:
             continue
-    return list(dict.fromkeys(idxs))  # de-dup, preserve order
+    return list(dict.fromkeys(idxs))
 
 
 @app.post("/generate", response_model=QAResponse)
@@ -117,8 +117,7 @@ async def generate_answer(request: GenerateRequest | QARequest) -> QAResponse:
     in diagnostics when calling this service (future: pass explicit chunks).
     If Gemini is not available, we return a graceful fallback.
     """
-    # Build user prompt. Prefer structured context if provided; otherwise
-    # assume the gateway embedded the context into the question string.
+
     context_str = None
     if hasattr(request, "context_chunks") and isinstance(
         getattr(request, "context_chunks"), list
@@ -131,11 +130,9 @@ async def generate_answer(request: GenerateRequest | QARequest) -> QAResponse:
             )
         except Exception:
             context_str = None
-    # The gateway includes the context inline within the question payload when not using structured request
-    # Deterministic offline answer
+
     if s.offline_mode:
         q = getattr(request, "question", "")
-        # Use first chunk to generate simple cited response deterministically
         citations: List[Citation] = []
         context = getattr(request, "context_chunks", []) or []
         if context:
@@ -157,7 +154,6 @@ async def generate_answer(request: GenerateRequest | QARequest) -> QAResponse:
             diagnostics={"mode": "offline"},
         )
 
-    # Provider routing: Gemini only; fallback if unavailable
     if genai is None:
         q = getattr(request, "question", "")
         answer = f"[fallback] No LLM provider configured. Question: {q[:400]}..."
@@ -168,7 +164,6 @@ async def generate_answer(request: GenerateRequest | QARequest) -> QAResponse:
             diagnostics={"reason": "no_provider"},
         )
 
-    # Build prompt for Gemini
     system = GENERATOR_SYSTEM_PROMPT
     q = getattr(request, "question", "")
     if context_str:
@@ -179,7 +174,6 @@ async def generate_answer(request: GenerateRequest | QARequest) -> QAResponse:
         )
     else:
         user_prompt = q + "\n\nReturn JSON as instructed in system prompt."
-    # Route to fast vs reasoning model
     route = _route_model(q)
     chosen_model = route.get("model") or s.gemini_fast_model
     try:
@@ -193,7 +187,6 @@ async def generate_answer(request: GenerateRequest | QARequest) -> QAResponse:
             prompt_tokens=estimate_tokens(user_prompt),
             corr=corr,
         ):
-            # Send only a user message (or plain string)
             resp = model.generate_content(user_prompt)
         text = resp.text if hasattr(resp, "text") else None
         if text:
@@ -217,9 +210,7 @@ async def generate_answer(request: GenerateRequest | QARequest) -> QAResponse:
                 except Exception:
                     continue
 
-            # Heuristic citations if none parsed
             if not citations:
-                # Try mapping [1], [2] to provided context order
                 ctx_chunks = getattr(request, "context_chunks", []) or []
                 idxs = _map_bracket_citations(answer)
                 for i in idxs:
@@ -234,7 +225,6 @@ async def generate_answer(request: GenerateRequest | QARequest) -> QAResponse:
                                 ),
                             )
                         )
-                # Fallback to first two chunks if still empty
                 if not citations and ctx_chunks:
                     for cc in ctx_chunks[:2]:
                         citations.append(
@@ -269,7 +259,6 @@ async def generate_answer(request: GenerateRequest | QARequest) -> QAResponse:
             )
             return out
     except Exception as e:
-        # Immediate fallback with error details
         return QAResponse(
             answer="[fallback] Generation error.",
             citations=[],
@@ -277,7 +266,6 @@ async def generate_answer(request: GenerateRequest | QARequest) -> QAResponse:
             diagnostics={"reason": "fallback", "error": str(e), "model": chosen_model},
         )
 
-    # Final fallback
     q = getattr(request, "question", "")
     answer = f"[fallback] No provider succeeded. Question: {q[:400]}..."
     return QAResponse(
@@ -289,7 +277,6 @@ async def generate_answer(request: GenerateRequest | QARequest) -> QAResponse:
 async def summarize_document(request: SummarizeRequest) -> SummarizeResponse:
     """Summarize a document from provided chunks using Gemini (fast model)."""
     chunks = request.chunks or []
-    # Offline mode: deterministic summary from first chunk
     if s.offline_mode or genai is None:
         text = getattr(chunks[0], "text", "") if chunks else ""
         summary = f"Summary: {text[:200]}..." if text else "No content to summarize."
@@ -311,7 +298,6 @@ async def summarize_document(request: SummarizeRequest) -> SummarizeResponse:
             diagnostics={"mode": "offline"},
         )
 
-    # Build summarization prompt
     try:
         context_str = "\n\n".join(
             [
@@ -382,7 +368,6 @@ async def summarize_document(request: SummarizeRequest) -> SummarizeResponse:
             },
         )
 
-    # Fallback
     return SummarizeResponse(
         doc_id=request.doc_id,
         summary="Unable to summarize at this time.",

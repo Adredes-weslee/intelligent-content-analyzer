@@ -100,7 +100,6 @@ services:
     env_file: [ ../.env ]
     environment:
       REDIS_URL: redis://redis:6379/0
-      # Internal service URLs (if your code reads these)
       INGEST_URL: http://ingest:8000
       RETRIEVAL_URL: http://retrieval:8000
       EMBEDDINGS_URL: http://embeddings:8000

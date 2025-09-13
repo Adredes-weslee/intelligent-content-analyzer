@@ -35,7 +35,6 @@ class Cache:
             try:
                 self._client = redis.Redis.from_url(url, decode_responses=True)
             except Exception:
-                # Fall back to local store if Redis is unavailable
                 self._client = None
 
     def get(self, key: str) -> Optional[Any]:
@@ -57,7 +56,6 @@ class Cache:
                     self._client.set(key, val)
                 return
             except Exception:
-                # fall back to local store on error
                 pass
         self._local_store[key] = value
 
@@ -92,9 +90,6 @@ def bump_index_version() -> int:
         return 0
 
 
-# --- Semantic cache helpers -------------------------------------------------
-
-
 def _deterministic_vector(text: str, dim: int = 128) -> list[float]:
     """Produce a deterministic pseudo-embedding from text.
 
@@ -102,7 +97,6 @@ def _deterministic_vector(text: str, dim: int = 128) -> list[float]:
     OFFLINE_MODE determinism and should not be used in production.
     """
     h = hashlib.sha256(text.encode("utf-8")).digest()
-    # Repeat hash bytes to cover required dimension
     bytes_needed = dim
     buf = (h * ((bytes_needed // len(h)) + 1))[:bytes_needed]
     return [b / 255.0 for b in buf]
@@ -130,9 +124,6 @@ def semantic_key(question: str, scope: str = "global", dim: int = 128) -> str:
         normalized.encode("utf-8") + b"|" + scope.encode("utf-8")
     ).hexdigest()
     return f"semqa:{h}"
-
-
-# --- Fingerprinting and semantic QA cache ----------------------------------
 
 
 def content_fingerprint(doc_ids: Iterable[str]) -> str:
@@ -170,7 +161,6 @@ class SemanticQACache:
 
     def _embed(self, question: str) -> Optional[List[float]]:
         try:
-            # Lazy import to avoid strong coupling
             from services.embeddings.app.embeddings import embed_texts  # type: ignore
 
             return [float(x) for x in embed_texts([question])[0]]
@@ -202,7 +192,6 @@ class SemanticQACache:
                 if score > best_score:
                     best_score = score
                     best_key = key
-        # Pull threshold from settings if possible; otherwise default 0.92
         try:
             from shared.settings import Settings  # type: ignore
 
@@ -241,7 +230,6 @@ def get_default_cache() -> Cache:
     compatibility. When disabled, returns an in-memory cache.
     """
     try:
-        # Local import to avoid circular imports at module load time
         from shared.settings import Settings  # type: ignore
 
         s = Settings()
@@ -251,5 +239,4 @@ def get_default_cache() -> Cache:
         url = s.redis_url or None
         return Cache(url)
     except Exception:
-        # If Settings cannot be loaded, fall back to in-memory cache
         return Cache(None)

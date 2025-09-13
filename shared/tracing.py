@@ -21,7 +21,7 @@ _settings = Settings()
 
 try:
     from langfuse import Langfuse  # type: ignore
-except Exception:  # pragma: no cover - optional dependency
+except Exception:
     Langfuse = None  # type: ignore
 
 
@@ -36,11 +36,9 @@ class _Span:
         self.name = name
 
     def __enter__(self) -> "_Span":
-        # In a real tracer you might record start time or allocate an ID here
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
-        # In a real tracer you would record the end time and any errors
         return None
 
 
@@ -53,7 +51,6 @@ class Tracer:
     def __init__(self) -> None:
         self._backend = _settings.tracing_backend.lower()
 
-        # Use explicit OS env if set; otherwise use Settings (.env)
         self._enabled = bool(_settings.langfuse_enabled)
 
         self._client = None
@@ -93,7 +90,6 @@ class Tracer:
     def start_span(self, name: str, **kwargs: Any) -> _Span:
         if self._client is None:
             return _Span(name, **kwargs)
-        # Prefer attaching spans to the current request trace if present
         tr = _current_trace.get()
         if tr is not None:
             return _LangfuseSpan(self._client, name, parent_trace=tr, **kwargs)
@@ -108,11 +104,10 @@ def install_fastapi_tracing(app, service_name: str = "ingest") -> None:
     try:
         from fastapi import Request
     except Exception:
-        return  # FastAPI not installed
+        return
 
     @app.middleware("http")
     async def _trace_middleware(request: "Request", call_next: Callable):
-        # Build a concise input payload (avoid full headers/body for PII)
         route = getattr(request.scope, "route", None)
         route_path = getattr(route, "path", request.url.path)
         tracer.start_trace(
@@ -128,7 +123,6 @@ def install_fastapi_tracing(app, service_name: str = "ingest") -> None:
                 response = await call_next(request)
             return response
         except Exception as e:
-            # Record an error span; trace will end below
             with span("http.error", error=str(e)):
                 pass
             raise
@@ -154,18 +148,16 @@ def span(name: str, **kwargs: Any) -> Iterator[_Span]:
     try:
         yield s
     finally:
-        # __exit__ is invoked when leaving context
         s.__exit__(None, None, None)
 
 
-class _LangfuseSpan(_Span):  # pragma: no cover - optional dependency
+class _LangfuseSpan(_Span):
     def __init__(
         self, client: Any, name: str, parent_trace: Any | None = None, **kwargs: Any
     ) -> None:
         super().__init__(name, **kwargs)
         self._client = client
         self._trace = None
-        # Use the current request trace if provided by Tracer.start_span
         self._trace = parent_trace
         self._span = None
         self._start_ms = _now_ms()
@@ -173,7 +165,6 @@ class _LangfuseSpan(_Span):  # pragma: no cover - optional dependency
 
     def __enter__(self) -> "_LangfuseSpan":
         try:
-            # If no current request trace, create a lightweight one so span still records
             if self._trace is None and hasattr(self._client, "trace"):
                 self._trace = self._client.trace(name=_settings.trace_name)
             if self._trace is not None and hasattr(self._trace, "span"):
@@ -189,7 +180,6 @@ class _LangfuseSpan(_Span):  # pragma: no cover - optional dependency
         try:
             duration_ms = max(1, _now_ms() - self._start_ms)
             if self._span and hasattr(self._span, "end"):
-                # Some SDKs support explicit end
                 self._span.end(
                     output={
                         "error": str(exc) if exc else None,
@@ -197,7 +187,6 @@ class _LangfuseSpan(_Span):  # pragma: no cover - optional dependency
                     }
                 )
             elif self._trace and hasattr(self._trace, "span"):
-                # Create a terminal span if not explicitly tracked
                 self._trace.span(
                     name=f"{self.name}:end", input={"duration_ms": duration_ms}
                 )
@@ -219,7 +208,6 @@ def log_event(
     if correlation_id:
         meta["correlation_id"] = correlation_id
     with span(f"event.{name}", **meta):
-        # no body; end immediately
         pass
 
 
@@ -227,5 +215,4 @@ def estimate_tokens(text: str) -> int:
     """Very rough subword token estimate (for logging only)."""
     if not text:
         return 0
-    # Approximate: 1 token ~= 4 chars for English-like text
     return max(1, int(len(text) / 4))

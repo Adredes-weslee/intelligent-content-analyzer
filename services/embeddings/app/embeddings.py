@@ -60,11 +60,9 @@ def embed_texts(
     s = settings
     target_dim = int(dim or s.embedding_dim or 768)
 
-    # Offline mode: deterministic, reproducible vectors
     if s.offline_mode:
         return [_deterministic_embed(t, target_dim) for t in texts]
 
-    # Gemini path (best-effort)
     if _GEMINI_API_KEY:
         if genai is None:
             try:
@@ -77,7 +75,6 @@ def embed_texts(
             out: List[List[float]] = []
             bsz = max(1, int(batch_size or 16))
             try:
-                # Use batch API if available
                 if hasattr(genai, "batch_embed_contents") and bsz > 1:
                     for i in range(0, len(texts), bsz):
                         chunk = texts[i : i + bsz]
@@ -111,7 +108,6 @@ def embed_texts(
                                         raise ValueError("No embedding in batch item")
                                     out.append([float(x) for x in vec])
                             else:
-                                # Unexpected shape; fall back to per-item for this chunk
                                 raise ValueError("Unexpected batch response shape")
                         except Exception:
                             for t in chunk:
@@ -154,7 +150,6 @@ def embed_texts(
                                     out.append([x / n for x in v])
                     return out
                 else:
-                    # Per-item path (no batch API)
                     for t in texts:
                         try:
                             single = genai.embed_content(
@@ -191,9 +186,8 @@ def embed_texts(
                             out.append([x / n for x in v])
                     return out
             except Exception:
-                pass  # fall through to random
+                pass
 
-    # Final fallback: random normalized vectors
     import random
 
     out: List[List[float]] = []

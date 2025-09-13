@@ -74,7 +74,6 @@ async def ingest(request: Request):
         raise HTTPException(
             status_code=400, detail="Content-Type must be multipart/form-data"
         )
-    # Extract boundary from header and sanitize quotes/extra params
     boundary_marker = "boundary="
     if boundary_marker not in content_type:
         raise HTTPException(status_code=400, detail="Missing multipart boundary")
@@ -86,20 +85,16 @@ async def ingest(request: Request):
     file_bytes = None
     filename = "uploaded"
     part_mime = None
-    # Split body by boundary delimiter, ignoring preamble/epilogue
     parts = body.split(b"--" + boundary.encode())
     for part in parts:
         if b"Content-Disposition" in part and b'name="file"' in part:
             header, _, data_section = part.partition(b"\r\n\r\n")
-            # Remove trailing CRLF (the part ends with \r\n)
             data = data_section.rsplit(b"\r\n", 1)[0]
             header_str = header.decode(errors="ignore")
-            # Extract filename robustly from Content-Disposition
             m_fn = re.search(r'filename\*?=(?:"([^"]+)"|([^;\r\n]+))', header_str, re.I)
             if m_fn:
                 raw_fn = (m_fn.group(1) or m_fn.group(2)).strip()
                 filename = os.path.basename(raw_fn)
-            # Prefer part Content-Type if present
             m_ct = re.search(r"Content-Type:\s*([^\r\n;]+)", header_str, re.I)
             if m_ct:
                 part_mime = m_ct.group(1).strip()
@@ -107,27 +102,22 @@ async def ingest(request: Request):
             break
     if not file_bytes:
         raise HTTPException(status_code=400, detail="No file part provided")
-    # Derive content type and checksum
     mime = part_mime or mimetypes.guess_type(filename)[0] or "application/octet-stream"
     checksum = hashlib.sha256(file_bytes).hexdigest()
     created_at = datetime.datetime.utcnow().isoformat()
 
-    # Determine streaming preference
     query = dict(request.query_params)
     stream_requested = query.get("stream", "0") in {"1", "true", "yes"}
     is_pdf = filename.lower().endswith(".pdf")
 
-    # Parse full text (non-stream) path
     def json_response():
         with span("ingest.parse_and_chunk", filename=filename):
             raw_text = parse_document(file_bytes, filename)
             doc_id = str(uuid.uuid4())
-            # detect language once per document; ignore errors
             try:
                 lang = detect(raw_text)[:2]
             except Exception:
                 lang = None
-            # Prefer section-aware chunking if enabled
             if _settings.chunk_section_aware_enabled:
                 chunks_meta = list(
                     iter_section_chunks(
@@ -174,14 +164,10 @@ async def ingest(request: Request):
             content={"doc_id": doc_id, "chunks": [c.dict() for c in doc_chunks]}
         )
 
-    # Streaming NDJSON path for large PDFs
     def ndjson_stream():
-        # Keep the span open until the stream finishes
         stream_span = tracer.start_span("ingest.stream_pdf", filename=filename)
-        # Important: enter the span so it actually starts recording
         stream_span.__enter__()
         doc_id = str(uuid.uuid4())
-        # Detect lang incrementally (roughly) by first page text
         try:
             g = stream_pdf_pages(file_bytes)
             first_page = next(g)
@@ -190,20 +176,17 @@ async def ingest(request: Request):
             except Exception:
                 lang_local = None
 
-            # Create a generator that yields the first page then the rest
             def page_gen():
                 yield first_page
                 for item in g:
                     yield item
         except StopIteration:
-            # Close span before fallback
             stream_span.__exit__(None, None, None)
             return json_response()
 
         def iter_ndjson():
             idx = 0
             for page_num, page_text in page_gen():
-                # Feed page_text through section-aware chunker with pages respected
                 for text, _, section, table_id in iter_section_chunks(
                     page_text,
                     max_tokens=_settings.chunk_max_tokens,
@@ -232,14 +215,12 @@ async def ingest(request: Request):
                 for chunk, _doc in iter_ndjson():
                     yield (chunk.json() + "\n").encode()
             finally:
-                # End the stream span when the stream is done
                 stream_span.__exit__(None, None, None)
 
         return StreamingResponse(encode_ndjson(), media_type="application/x-ndjson")
 
     should_stream = False
     if is_pdf and (stream_requested or _settings.ingest_streaming_enabled):
-        # If auto-streaming, only when page count exceeds threshold
         if stream_requested:
             should_stream = True
         else:
@@ -249,7 +230,6 @@ async def ingest(request: Request):
                 pages = len(PdfReader(io.BytesIO(file_bytes)).pages)
                 should_stream = pages >= _settings.ingest_stream_pdf_min_pages
             except Exception:
-                # If page counting fails, fall back to non-stream
                 should_stream = False
     if should_stream:
         return ndjson_stream()

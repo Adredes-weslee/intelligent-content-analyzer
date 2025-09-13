@@ -87,8 +87,8 @@ class RetrievalFilters(BaseModel):
     """Optional per-query filters for retrieval."""
 
     include_doc_ids: Optional[List[str]] = None
-    include_sources: Optional[List[str]] = None  # matches DocMetadata.source
-    lang: Optional[str] = None  # matches DocMetadata.lang if present
+    include_sources: Optional[List[str]] = None
+    lang: Optional[str] = None
 
 
 class RetrieveRequest(BaseModel):
@@ -149,7 +149,6 @@ class QARequest(BaseModel):
     reranker: Optional[str] = None
     filters: Optional[RetrievalFilters] = None
     dense_candidates: Optional[int] = None
-    # Per-request toggle to enable/disable LLM-as-judge during evaluation
     use_judge: Optional[bool] = None
     min_confidence: float | None = None
 
@@ -158,7 +157,6 @@ class Citation(BaseModel):
     doc_id: Optional[str] = None
     page: Optional[int] = None
     section: Optional[str] = None
-    # enriched optional fields
     chunk_id: Optional[str] = None
     file_name: Optional[str] = None
     snippet: Optional[str] = None
@@ -186,7 +184,6 @@ class SummarizeRequest(BaseModel):
     """
 
     doc_id: Optional[str] = None
-    # Optional correlation id to stitch events across services for one request
     correlation_id: Optional[str] = None
     chunks: List[DocChunk]
 
@@ -214,7 +211,6 @@ class GenerateRequest(BaseModel):
 
     question: str
     context_chunks: List[DocChunk]
-    # Optional correlation id to stitch events across services for one request
     correlation_id: Optional[str] = None
 
 
@@ -241,9 +237,7 @@ class EvaluateRequest(BaseModel):
     question: str
     answer: str
     sources: List[DocChunk]
-    # Optional: provide scored hits to compute context relevance ratio
     hits: Optional[List[RetrieveResult]] = None
-    # Per-request toggle to enable/disable LLM-as-judge
     use_judge: Optional[bool] = None
 
 
@@ -256,12 +250,8 @@ class EvaluateResponse(BaseModel):
     factuality: float
     relevance: float
     completeness: float
-    # Extended judge rubric (optional fields):
-    # - faithfulness: fraction of answer statements grounded in sources [0,1]
     faithfulness: Optional[float] = None
-    # - answer_relevance_1_5: how well the answer addresses the question [1–5]
     answer_relevance_1_5: Optional[float] = None
-    # - context_relevance_ratio: fraction of retrieved chunks relevant [0,1]
     context_relevance_ratio: Optional[float] = None
     comments: Optional[str] = None
 

@@ -56,23 +56,19 @@ def _is_heading(line: str) -> Optional[str]:
     if not s:
         return None
 
-    # Ignore page markers and table tags
     if s.startswith("=== Page ") and s.endswith(" ==="):
         return None
     if s.startswith("[table") or s.startswith("[/table"):
         return None
 
-    # ATX Markdown headings: "#", "##", ..., "######"
     m = re.match(r"^#{1,6}\s+(.+)$", s)
     if m:
         return m.group(1).strip()
 
-    # Numbered headings: "1. Title", "1) Title", "2.3 Methods", "2.3.1 Title"
     m = re.match(r"^\d+(?:\.\d+)*[.)]?\s+(.+)$", s)
     if m:
         return m.group(1).strip()
 
-    # ALL-CAPS short lines treated as titles
     if s == s.upper() and any(c.isalpha() for c in s) and len(s.split()) <= 10:
         return s
 
@@ -109,33 +105,26 @@ def iter_section_chunks(
             return (chunk, page, section, None)
         return None
 
-    # Handle table blocks separately to attach table_id
     i = 0
     lines = text.splitlines()
     while i < len(lines):
         line = lines[i]
-        # Page header
         if respect_pages:
             m_page = re.match(r"^=== Page (\d+) ===$", line.strip())
             if m_page:
-                # Flush any pending text before page switch
                 flushed = flush_plain_buf()
                 if flushed:
                     yield flushed
                 page = int(m_page.group(1))
                 i += 1
                 continue
-        # Table block
         if line.strip().startswith("[table id="):
-            # Extract table_id
             m = re.match(r"^\[table id=([^\]]+)\]$", line.strip())
             table_id = m.group(1) if m else None
-            # Accumulate table content until [/table]
             tbl_tokens: List[str] = []
             i += 1
             while i < len(lines) and lines[i].strip() != "[/table]":
                 tbl_tokens.extend(lines[i].strip().split())
-                # Emit in chunks respecting max_tokens
                 while len(tbl_tokens) >= max_tokens:
                     chunk = " ".join(tbl_tokens[:max_tokens])
                     yield (chunk, page, section, table_id)
@@ -143,16 +132,13 @@ def iter_section_chunks(
                 i += 1
             if tbl_tokens:
                 yield (" ".join(tbl_tokens), page, section, table_id)
-            # Skip closing [/table]
             if i < len(lines) and lines[i].strip() == "[/table]":
                 i += 1
             continue
 
-        # Heading detection
         if respect_headings:
             hd = _is_heading(line)
             if hd:
-                # Flush previous paragraph buffer under old section
                 flushed = flush_plain_buf()
                 if flushed:
                     yield flushed
@@ -160,7 +146,6 @@ def iter_section_chunks(
                 i += 1
                 continue
 
-        # Normal text
         tokens = line.strip().split()
         for tok in tokens:
             token_buf.append(tok)
@@ -168,14 +153,12 @@ def iter_section_chunks(
                 flushed = flush_plain_buf()
                 if flushed:
                     yield flushed
-        # Blank line boundary: encourage flush
         if not tokens and token_buf:
             flushed = flush_plain_buf()
             if flushed:
                 yield flushed
         i += 1
 
-    # Flush remainder
     flushed = flush_plain_buf()
     if flushed:
         yield flushed

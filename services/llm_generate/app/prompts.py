@@ -142,7 +142,6 @@ ROUTER_PROMPT = (
 )
 
 # ===========================  OPTIONAL: EXTRA TOOLS  ======================= #
-# (Not required by existing services; include if you plan to use them.)
 
 METADATA_EXTRACTOR_PROMPT = (
     "ROLE: Extract bibliographic and structural metadata from educational document chunks.\n\n"

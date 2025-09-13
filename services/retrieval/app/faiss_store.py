@@ -33,7 +33,7 @@ from shared.settings import Settings
 
 try:
     import faiss  # type: ignore
-except Exception:  # pragma: no cover - optional dependency
+except Exception:
     faiss = None  # type: ignore
 
 
@@ -95,7 +95,6 @@ def init_index(dim: Optional[int] = None) -> None:
     if os.path.exists(_INDEX_PATH):
         try:
             _index = faiss.read_index(_INDEX_PATH)
-            # Sync dim to loaded index if available
             try:
                 _dim = int(getattr(_index, "d", _dim))
             except Exception:
@@ -105,7 +104,6 @@ def init_index(dim: Optional[int] = None) -> None:
     if _index is None:
         base = faiss.IndexFlatL2(_dim) if _METRIC == "l2" else faiss.IndexFlatIP(_dim)
         _index = faiss.IndexIDMap2(base)
-    # Load mapping
     m = _load_doc_map()
     _chunk_to_fid = {k: int(v) for k, v in m.get("chunk_to_faiss_id", {}).items()}
     _fid_to_chunk = {int(k): v for k, v in m.get("faiss_id_to_chunk", {}).items()}
@@ -119,7 +117,6 @@ def _persist() -> None:
         faiss.write_index(_index, _INDEX_PATH)
     except Exception as e:
         logging.error(f"Failed to persist FAISS index to {_INDEX_PATH}: {e}")
-    # Save mapping
     m = _load_doc_map()
     m["chunk_to_faiss_id"] = {k: int(v) for k, v in _chunk_to_fid.items()}
     m["faiss_id_to_chunk"] = {int(k): v for k, v in _fid_to_chunk.items()}
@@ -150,12 +147,10 @@ def add_vectors(chunk_ids: List[str], vectors: List[List[float]]) -> None:
         return
     dim = len(vectors[0]) if vectors else _dim
     if dim != _dim:
-        # Best-effort: attempt to accept different dimension by reinit
         init_index(dim)
     new_vecs: List[List[float]] = []
     for cid, vec in zip(chunk_ids, vectors):
         if cid in _chunk_to_fid:
-            # skip existing; use upsert_vectors for replace
             continue
         v = np.array(vec, dtype="float32")
         if _NORMALIZE and _METRIC == "ip":
@@ -165,7 +160,6 @@ def add_vectors(chunk_ids: List[str], vectors: List[List[float]]) -> None:
     if not new_vecs:
         return
     faiss_ids = _assign_ids(len(new_vecs))
-    # Rebuild mapping for order correspondence
     idx = 0
     for cid, vec in zip(chunk_ids, vectors):
         if cid in _chunk_to_fid:
@@ -183,7 +177,6 @@ def upsert_vectors(chunk_ids: List[str], vectors: List[List[float]]) -> None:
     """Replace vectors for the given chunk IDs if present, else add them."""
     if faiss is None or _index is None:
         return
-    # Ensure index dimension matches incoming vectors
     if vectors:
         dim = len(vectors[0])
         if dim != _dim:
@@ -203,7 +196,6 @@ def upsert_vectors(chunk_ids: List[str], vectors: List[List[float]]) -> None:
         else:
             to_add_cids.append(cid)
             to_add_vecs.append(v.tolist())
-    # Replace by removing then adding with same IDs
     if to_replace:
         ids = np.asarray(to_replace, dtype="int64")
         _index.remove_ids(ids)

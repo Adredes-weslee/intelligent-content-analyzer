@@ -47,7 +47,6 @@ except Exception:
 app = FastAPI(title="API Gateway", version="0.1.0")
 install_fastapi_tracing(app, service_name="api-gateway")
 
-# Include routers
 app.include_router(upload.router, prefix="", tags=["upload"])
 app.include_router(qa.router, prefix="", tags=["qa"])
 app.include_router(summary.router, prefix="", tags=["summary"])
@@ -55,7 +54,6 @@ app.include_router(summary.router, prefix="", tags=["summary"])
 
 @app.on_event("startup")
 def _bootstrap_retrieval_inproc() -> None:
-    # If retrieval service isn’t running, load its state so in‑proc calls work
     if _retrieval_load and _retrieval_init_index and _retrieval_get_dim:
         try:
             _retrieval_init_index(dim=_retrieval_get_dim())
@@ -67,7 +65,6 @@ def _bootstrap_retrieval_inproc() -> None:
             pass
 
 
-# Optional: quick debug to confirm it loaded
 @app.get("/_retrieval_status")
 def _retrieval_status():
     abs_path = str(Path(_RETRIEVAL_DOC_MAP).resolve()) if _RETRIEVAL_DOC_MAP else None
@@ -78,7 +75,6 @@ def _retrieval_status():
             chunk_count = len(m.get("chunks", {}))
         except Exception:
             chunk_count = -1
-    # fetch live length from retrieval module to avoid stale alias
     try:
         import services.retrieval.app.main as _ret
 

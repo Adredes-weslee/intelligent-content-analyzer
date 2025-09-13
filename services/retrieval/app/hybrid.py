@@ -35,7 +35,6 @@ def _tokens(s: str) -> List[str]:
 
 
 def _ensure_corpus_loaded() -> None:
-    # Load chunks from store if INDEX is empty (in-process gateway run)
     try:
         if getattr(_ret, "INDEX", None) is not None and len(_ret.INDEX) == 0:
             _ret._load_chunks_from_store()
@@ -57,7 +56,6 @@ async def hybrid_search(request: RetrieveRequest) -> RetrieveResponse:
         # 1) BM25 baseline (uses main.search which now normalizes tokens)
         bm25_resp = await bm25_search(request)
     bm25_hits = bm25_resp.hits
-    # Apply per-query filters to bm25 hits
     bm25_hits = [
         h
         for h in bm25_hits
@@ -65,7 +63,6 @@ async def hybrid_search(request: RetrieveRequest) -> RetrieveResponse:
     ]
     bm25_ids = [h.chunk.id for h in bm25_hits]
 
-    # Helper: chunk lookup (filtered)
     id2chunk = {
         c.id: c
         for c in _ret.INDEX
@@ -77,9 +74,7 @@ async def hybrid_search(request: RetrieveRequest) -> RetrieveResponse:
     used_faiss = False
     dense_results: List[Tuple[str, float]] = []
     try:
-        # Embed query once
         qv = embed_texts([request.query], dim=get_index_dim())[0]
-        # Candidate size for dense search (allow per-request override)
         dense_k = max(
             (getattr(request, "dense_candidates", None) or s.dense_candidates),
             request.top_k * 3,
@@ -89,14 +84,12 @@ async def hybrid_search(request: RetrieveRequest) -> RetrieveResponse:
             used_faiss = True
             metric = (s.faiss_metric or "ip").lower()
             for cid, dist in faiss_out:
-                # Keep only allowed chunks per filters
                 if cid in id2chunk:
                     score = float(-dist) if metric == "l2" else float(dist)
                     dense_results.append((cid, score))
         else:
             raise RuntimeError("faiss returned no results")
     except Exception:
-        # Fallback: BoW-cosine dense proxy over the whole filtered index
         q_tokens = _tokens(request.query)
         q_bow: Dict[str, int] = {}
         for t in q_tokens:
@@ -106,7 +99,6 @@ async def hybrid_search(request: RetrieveRequest) -> RetrieveResponse:
             c_bow: Dict[str, int] = {}
             for t in c_tokens:
                 c_bow[t] = c_bow.get(t, 0) + 1
-            # cosine for sparse vectors
             num = sum(
                 q_bow.get(k, 0) * c_bow.get(k, 0) for k in set(q_bow) | set(c_bow)
             )
@@ -114,7 +106,6 @@ async def hybrid_search(request: RetrieveRequest) -> RetrieveResponse:
             db = sum(v * v for v in c_bow.values()) ** 0.5 or 1.0
             dense_results.append((c.id, num / (da * db)))
 
-    # Keep top‑N dense candidates
     dense_results.sort(key=lambda kv: kv[1], reverse=True)
     top_dense = dense_results[
         : max(
@@ -131,14 +122,13 @@ async def hybrid_search(request: RetrieveRequest) -> RetrieveResponse:
     # 4) RRF combine
     bm25_rank: Dict[str, int] = {cid: i + 1 for i, cid in enumerate(bm25_ids)}
     dense_rank: Dict[str, int] = {cid: i + 1 for i, (cid, _) in enumerate(top_dense)}
-    k = 20.0  # smaller k → higher RRF scores than 60
+    k = 20.0
     rrf_scores: Dict[str, float] = {}
     for cid in union_ids:
         r1 = bm25_rank.get(cid, 10**6)
         r2 = dense_rank.get(cid, 10**6)
         rrf_scores[cid] = 1.0 / (k + r1) + 1.0 / (k + r2)
 
-    # Compose results with available bm25/dense scores
     combined: List[RetrieveResult] = []
     bm25_score_map: Dict[str, float] = {
         h.chunk.id: float(h.bm25 or 0.0) for h in bm25_hits
@@ -156,7 +146,6 @@ async def hybrid_search(request: RetrieveRequest) -> RetrieveResponse:
             )
         )
 
-    # Deduplicate by chunk.id (safety; keep highest component scores)
     merged: "OrderedDict[str, RetrieveResult]" = OrderedDict()
     for r in combined:
         cid = r.chunk.id

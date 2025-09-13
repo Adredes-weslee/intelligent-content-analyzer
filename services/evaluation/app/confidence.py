@@ -11,7 +11,7 @@ from typing import Dict, Optional
 
 def _clip01(x: float) -> float:
     try:
-        if x != x:  # NaN
+        if x != x:
             return 0.0
         return 0.0 if x < 0.0 else 1.0 if x > 1.0 else float(x)
     except Exception:
@@ -61,7 +61,6 @@ def compute_confidence(
 
     rt = _clip01(retrieval_top)
     rm = _clip01(retrieval_mean)
-    # Optional: if retrieval is weak, ignore judge contribution
     if rt < 0.02 and rm < 0.02:
         w["judge"] = 0.0
 
@@ -81,5 +80,4 @@ def compute_confidence(
         + w["faithfulness"] * faith
         + w["judge"] * judge_avg
     )
-    # Final clamp
     return _clip01(score)

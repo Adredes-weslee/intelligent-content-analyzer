@@ -48,7 +48,6 @@ from shared.settings import Settings
 from shared.tracing import log_event, span
 
 _settings = Settings()
-# Optional Gemini client for query refinement and translation
 _genai = None
 _GEMINI_API_KEY = _settings.gemini_api_key
 if _GEMINI_API_KEY:
@@ -60,7 +59,6 @@ if _GEMINI_API_KEY:
     except Exception:
         _genai = None
 
-# Optional language detection (AF5)
 try:
     from langdetect import detect as _langdetect_detect  # type: ignore
 except Exception:
@@ -156,7 +154,6 @@ async def ask_question(request: QARequest) -> QAResponse:
     correlation_id = str(uuid.uuid4())
     index_version = get_index_version()
 
-    # Rate limit per normalized question
     if _settings.rate_limit_enabled:
         norm = _canonicalize_query(request.question)
         rl_key = f"rl:qpm:{norm}"
@@ -172,7 +169,6 @@ async def ask_question(request: QARequest) -> QAResponse:
         except Exception:
             pass
 
-    # Cache lookup
     exact_key = f"qa:v={index_version}:{_canonicalize_query(request.question)}:k={request.k}:rr={request.use_rerank}"
     sem_key = f"{semantic_key(request.question)}:v={index_version}"
     cached = (
@@ -183,7 +179,7 @@ async def ask_question(request: QARequest) -> QAResponse:
     if cached:
         return QAResponse(**cached)
 
-    # Step 1: retrieval
+    # Step 1: Retrieval
     with span(
         "qa.retrieve", k=request.k, rerank=request.use_rerank, corr=correlation_id
     ):
@@ -211,7 +207,7 @@ async def ask_question(request: QARequest) -> QAResponse:
             _cache.set(sem_key, resp.dict(), ttl=ttl)
         return resp
 
-    # Step 2: rerank
+    # Step 2: Rerank
     if request.use_rerank:
         with span("qa.rerank"):
             hits = rerank(
@@ -222,10 +218,8 @@ async def ask_question(request: QARequest) -> QAResponse:
                 query=request.question,
             )
 
-    # Thresholding on retrieval quality
     top_score = float(hits[0].score if hits else 0.0)
 
-    # AF6: Multi-variant refinement union with optional re-rank
     if top_score < _settings.rerank_threshold:
         variants = await _expand_queries(request.question)
         union_hits, seen_ids = [], set()
@@ -261,7 +255,6 @@ async def ask_question(request: QARequest) -> QAResponse:
                 hits = union_hits
                 top_score = float(hits[0].score or 0.0)
 
-    # AF5: Translation fallback (question -> dominant doc language) if still low
     if top_score < _settings.rerank_threshold and _genai is not None:
         q_lang = _detect_lang(request.question)
         counts = {}
@@ -326,7 +319,6 @@ async def ask_question(request: QARequest) -> QAResponse:
             _cache.set(sem_key, resp.dict(), ttl=ttl)
         return resp
 
-    # Semantic cache lookup using content fingerprint before generation
     fp = content_fingerprint([h.chunk.doc_id for h in hits[: max(10, request.k)]])
     if _settings.cache_enabled:
         with span("qa.semantic_cache_lookup", corr=correlation_id):
@@ -340,7 +332,7 @@ async def ask_question(request: QARequest) -> QAResponse:
             except Exception:
                 pass
 
-    # Step 3: generation
+    # Step 3: Generation
     with span("qa.generate", corr=correlation_id):
         top_chunks = [h.chunk for h in hits[: request.k]]
         gen_req = GenerateRequest(
@@ -351,7 +343,7 @@ async def ask_question(request: QARequest) -> QAResponse:
         gen_resp = await llm_generate(gen_req)
         answer_text = gen_resp.answer
 
-    # Step 4: evaluation
+    # Step 4: Evaluation
     with span("qa.evaluate", corr=correlation_id):
         from services.evaluation.app.main import evaluate as eval_endpoint
 
@@ -373,7 +365,7 @@ async def ask_question(request: QARequest) -> QAResponse:
         }
         log_event("Evaluation", payload=eval_scores, correlation_id=correlation_id)
 
-    # Step 5: confidence
+    # Step 5: Confidence
     from services.evaluation.app.confidence import compute_confidence
 
     judge_scores = {"faithfulness": float(eval_scores.get("faithfulness", 0.0) or 0.0)}
@@ -422,7 +414,6 @@ async def ask_question(request: QARequest) -> QAResponse:
             _cache.set(sem_key, resp.dict(), ttl=ttl)
         return resp
 
-    # Build enriched citations from top hits (prefer generator later if it supplies more)
     enriched: list[Citation] = []
     for h in hits[: request.k]:
         ch = h.chunk
@@ -456,7 +447,6 @@ async def ask_question(request: QARequest) -> QAResponse:
                 doc_id=getattr(ch, "doc_id", None),
                 page=page,
                 section=section,
-                # extras (optional in model)
                 chunk_id=getattr(ch, "id", None),
                 file_name=file_name,
                 snippet=snippet,
@@ -464,10 +454,8 @@ async def ask_question(request: QARequest) -> QAResponse:
             )
         )
 
-    # If generator returned citations, prefer them and merge extras if missing
     if getattr(gen_resp, "citations", None):
         try:
-            # best-effort merge: keep generator minimal fields, attach extras by index
             gen_cits = []
             for base, extra in zip(gen_resp.citations[: request.k], enriched):
                 gen_cits.append(
@@ -485,7 +473,6 @@ async def ask_question(request: QARequest) -> QAResponse:
         except Exception:
             pass
 
-    # Fingerprint and semantic cache key
     fp_key = f"qa2:v={index_version}:{_canonicalize_query(request.question)}:fp={fp}:k={request.k}:rr={request.use_rerank}"
     sem_cache = get_semantic_cache()
 

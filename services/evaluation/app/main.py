@@ -64,7 +64,6 @@ async def evaluate(req: EvaluateRequest) -> EvaluateResponse:
             req.question, req.answer, req.sources
         )
 
-        # Extended heuristics
         faithfulness = heuristic_faithfulness(req.answer, req.sources)
         answer_rel_1_5 = heuristic_answer_relevance_1_5(req.question, req.answer)
         ctx_ratio = (
@@ -75,9 +74,7 @@ async def evaluate(req: EvaluateRequest) -> EvaluateResponse:
             else None
         )
 
-        # Optional LLM-as-judge enrichment
         judge_payload = None
-        # Only call LLM judge if globally enabled AND not explicitly disabled in request
         if _genai is not None and (req.use_judge is not False):
             try:
                 text_sources = "\n\n".join(
@@ -102,7 +99,6 @@ async def evaluate(req: EvaluateRequest) -> EvaluateResponse:
             except Exception:
                 judge_payload = None
 
-        # Map judge outputs if present
         if judge_payload:
             try:
                 fs = float(judge_payload.get("factual_score_0_10", 0.0))
@@ -116,9 +112,7 @@ async def evaluate(req: EvaluateRequest) -> EvaluateResponse:
                         ),
                     )
                 if "answer_relevance_1_5" in judge_payload:
-                    answer_rel_1_5 = float(
-                        judge_payload["answer_relevance_1_5"]
-                    )  # keep 1–5 scale
+                    answer_rel_1_5 = float(judge_payload["answer_relevance_1_5"])
                 if "context_relevance_ratio_0_1" in judge_payload:
                     ctx_ratio = float(judge_payload["context_relevance_ratio_0_1"])
             except Exception:
@@ -156,7 +150,6 @@ async def judge(req: EvaluateRequest) -> dict:
 
     Falls back to a deterministic stub if disabled or unavailable.
     """
-    # Optional LLM path
     if _genai is not None:
         try:
             text_sources = "\n\n".join([getattr(c, "text", "") for c in req.sources])
@@ -192,7 +185,6 @@ async def judge(req: EvaluateRequest) -> dict:
         except Exception:
             pass
 
-    # Fallback stub
     factuality, relevance, completeness = _fallback_judge(req)
     return {
         "factuality": factuality,
@@ -201,7 +193,5 @@ async def judge(req: EvaluateRequest) -> dict:
     }
 
 
-# Local fallback judge
 def _fallback_judge(req: EvaluateRequest) -> tuple[float, float, float]:
-    # Dummy mid-range scores
     return 0.5, 0.5, 0.5
