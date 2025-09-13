@@ -149,14 +149,20 @@ class QARequest(BaseModel):
     reranker: Optional[str] = None
     filters: Optional[RetrievalFilters] = None
     dense_candidates: Optional[int] = None
+    # Per-request toggle to enable/disable LLM-as-judge during evaluation
+    use_judge: Optional[bool] = None
+    min_confidence: float | None = None
 
 
 class Citation(BaseModel):
-    """A single citation attached to a QA response."""
-
-    doc_id: str
+    doc_id: Optional[str] = None
     page: Optional[int] = None
     section: Optional[str] = None
+    # enriched optional fields
+    chunk_id: Optional[str] = None
+    file_name: Optional[str] = None
+    snippet: Optional[str] = None
+    score: Optional[float] = None
 
 
 class QAResponse(BaseModel):
@@ -237,6 +243,8 @@ class EvaluateRequest(BaseModel):
     sources: List[DocChunk]
     # Optional: provide scored hits to compute context relevance ratio
     hits: Optional[List[RetrieveResult]] = None
+    # Per-request toggle to enable/disable LLM-as-judge
+    use_judge: Optional[bool] = None
 
 
 class EvaluateResponse(BaseModel):
