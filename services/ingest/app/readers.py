@@ -31,7 +31,7 @@ from PIL import Image
 from shared.settings import Settings
 
 _settings = Settings()
-_GEMINI_KEY = os.getenv("GEMINI_API_KEY")
+_GEMINI_KEY = _settings.gemini_api_key
 _GEMINI_ENABLE_MM = _settings.gemini_multimodal_enabled and bool(_GEMINI_KEY)
 _GEMINI_FAST = _settings.gemini_fast_model
 _GEMINI_REASON = _settings.gemini_reasoning_model
