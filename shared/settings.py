@@ -8,14 +8,33 @@ as offline mode and cache configuration so behaviour is consistent across
 services.
 """
 
-from pydantic import BaseSettings, Field
+from pydantic import AliasChoices, Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_provider: str = Field("GEMINI", env="MODEL_PROVIDER")
-    # Embeddings: default to Gemini Embedding
-    embedding_model: str = Field("gemini-embedding-001", env="EMBEDDING_MODEL")
-    embedding_dim: int = Field(768, env="GEMINI_EMBEDDING_DIM")
+    # Accept .env and ignore extra keys to avoid crashes
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+        case_sensitive=False,
+    )
+
+    # Gemini
+    gemini_api_key: str | None = Field(
+        default=None, validation_alias=AliasChoices("GEMINI_API_KEY", "gemini_api_key")
+    )
+    gemini_fast_model: str = Field(
+        default="gemini-2.5-flash",
+        validation_alias=AliasChoices("GEMINI_FAST_MODEL", "GEMINI_MODEL"),
+    )
+    gemini_reasoning_model: str = Field(
+        default="gemini-2.5-pro", validation_alias="GEMINI_REASONING_MODEL"
+    )
+
+    embedding_model: str = Field("gemini-embedding-001", env=["EMBEDDING_MODEL"])
+    embedding_dim: int = Field(3072, env="GEMINI_EMBEDDING_DIM")
     vector_store: str = Field("FAISS", env="VECTOR_STORE")
     reranker: str = Field("bge-reranker", env="RERANKER")
     language_mode: str = Field("multilingual", env="LANGUAGE_MODE")
@@ -33,13 +52,12 @@ class Settings(BaseSettings):
     # Support public/secret key pair if available
     langfuse_public_key: str = Field("", env="LANGFUSE_PUBLIC_KEY")
     langfuse_secret_key: str = Field("", env="LANGFUSE_SECRET_KEY")
-
-    # Gemini generation routing
-    gemini_fast_model: str = Field("gemini-2.5-flash", env="GEMINI_FAST_MODEL")
-    gemini_reasoning_model: str = Field("gemini-2.5-pro", env="GEMINI_REASONING_MODEL")
+    # Tracing config
+    tracing_backend: str = Field("langfuse", env="TRACING_BACKEND")
+    trace_name: str = Field("ica-trace", env="TRACE_NAME")
 
     # Ingestion and parsing limits
-    ingest_max_file_mb: int = Field(50, env="INGEST_MAX_FILE_MB")
+    ingest_max_file_mb: int = Field(150, env="INGEST_MAX_FILE_MB")
     ingest_max_pages: int = Field(500, env="INGEST_MAX_PAGES")
     ingest_streaming_enabled: bool = Field(False, env="INGEST_STREAMING_ENABLED")
     # If a PDF has at least this many pages, prefer streaming NDJSON output
@@ -56,7 +74,7 @@ class Settings(BaseSettings):
     pdf_render_images: bool = Field(True, env="PDF_RENDER_IMAGES")
 
     # FAISS configuration
-    faiss_index_path: str = Field("data/faiss.index", env="FAISS_INDEX_PATH")
+    faiss_index_path: str = Field("./data/faiss.index", env="FAISS_INDEX_PATH")
     faiss_metric: str = Field("ip", env="FAISS_METRIC")  # "ip" or "l2"
     faiss_normalize: bool = Field(True, env="FAISS_NORMALIZE")
     doc_map_path: str = Field("data/doc_map.json", env="DOC_MAP_PATH")
@@ -81,7 +99,7 @@ class Settings(BaseSettings):
 
     # Summarization and evaluation toggles
     summarizer_max_chunks: int = Field(20, env="SUMMARIZER_MAX_CHUNKS")
-    eval_llm_enabled: bool = Field(False, env="EVAL_LLM_ENABLED")
+    eval_llm_enabled: bool = Field(True, env="EVAL_LLM_ENABLED")
 
     # Caching & performance
     answer_cache_ttl_seconds: int = Field(7 * 24 * 3600, env="ANSWER_CACHE_TTL_SECONDS")
@@ -94,7 +112,3 @@ class Settings(BaseSettings):
     # Rate limiting (enabled per latest requirements)
     rate_limit_enabled: bool = Field(True, env="RATE_LIMIT_ENABLED")
     rate_limit_per_minute: int = Field(5, env="RATE_LIMIT_PER_MINUTE")
-
-    class Config:
-        env_file = ".env"
-        case_sensitive = False
