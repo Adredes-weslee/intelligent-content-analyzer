@@ -14,8 +14,6 @@ This service holds no state and performs no persistence.
 
 from __future__ import annotations
 
-import os
-
 from fastapi import FastAPI
 
 from services.llm_generate.app.prompts import JUDGE_SYSTEM_PROMPT
@@ -23,7 +21,6 @@ from shared.models import EvaluateRequest, EvaluateResponse
 from shared.settings import Settings
 from shared.tracing import span
 
-from .judge import llm_judge
 from .metrics import (
     heuristic_answer_relevance_1_5,
     heuristic_context_relevance_ratio,
@@ -36,7 +33,7 @@ _settings = Settings()
 
 _genai = None
 if _settings.eval_llm_enabled and not _settings.offline_mode:
-    api_key = os.getenv("GEMINI_API_KEY")
+    api_key = _settings.gemini_api_key
     if api_key:
         try:
             import google.generativeai as genai  # type: ignore
@@ -88,16 +85,11 @@ async def evaluate(req: EvaluateRequest) -> EvaluateResponse:
                     "Return JSON as instructed in the system prompt."
                 )
                 with span("eval.judge.llm"):
-                    model = _genai.GenerativeModel(_settings.gemini_fast_model)
-                    resp = model.generate_content(
-                        [
-                            {
-                                "role": "system",
-                                "parts": [{"text": JUDGE_SYSTEM_PROMPT}],
-                            },
-                            {"role": "user", "parts": [{"text": prompt}]},
-                        ]
+                    model = _genai.GenerativeModel(
+                        _settings.gemini_reasoning_model,
+                        system_instruction=JUDGE_SYSTEM_PROMPT,
                     )
+                    resp = model.generate_content(prompt)
                     raw = getattr(resp, "text", "") or ""
                     start, end = raw.find("{"), raw.rfind("}")
                     if start != -1 and end != -1:
@@ -170,13 +162,11 @@ async def judge(req: EvaluateRequest) -> dict:
                 "Return JSON as instructed in the system prompt."
             )
             with span("judge.llm.call"):
-                model = _genai.GenerativeModel(_settings.gemini_fast_model)
-                resp = model.generate_content(
-                    [
-                        {"role": "system", "parts": [{"text": JUDGE_SYSTEM_PROMPT}]},
-                        {"role": "user", "parts": [{"text": prompt}]},
-                    ]
+                model = _genai.GenerativeModel(
+                    _settings.gemini_reasoning_model,
+                    system_instruction=JUDGE_SYSTEM_PROMPT,
                 )
+                resp = model.generate_content(prompt)
                 raw = getattr(resp, "text", "") or ""
                 start, end = raw.find("{"), raw.rfind("}")
                 payload = {}
@@ -200,9 +190,15 @@ async def judge(req: EvaluateRequest) -> dict:
             pass
 
     # Fallback stub
-    factuality, relevance, completeness = llm_judge(req)
+    factuality, relevance, completeness = _fallback_judge(req)
     return {
         "factuality": factuality,
         "relevance": relevance,
         "completeness": completeness,
     }
+
+
+# Local fallback judge
+def _fallback_judge(req: EvaluateRequest) -> tuple[float, float, float]:
+    # Dummy mid-range scores
+    return 0.5, 0.5, 0.5
