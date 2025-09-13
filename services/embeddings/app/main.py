@@ -18,12 +18,13 @@ from fastapi import FastAPI
 
 from shared.models import EmbedRequest, EmbedResponse
 from shared.settings import Settings
-from shared.tracing import log_event, span
+from shared.tracing import install_fastapi_tracing, log_event, span
 
 from .embeddings import embed_texts
 
 settings = Settings()
 app = FastAPI(title="Embeddings Service", version="0.1.0")
+install_fastapi_tracing(app, service_name="embeddings")
 
 
 @app.post("/embed", response_model=EmbedResponse)
