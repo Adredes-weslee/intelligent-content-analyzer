@@ -13,7 +13,6 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    # Accept .env and ignore extra keys to avoid crashes
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -49,9 +48,11 @@ class Settings(BaseSettings):
     langfuse_enabled: bool = Field(True, env="LANGFUSE_ENABLED")
     langfuse_api_key: str = Field("", env="LANGFUSE_API_KEY")
     langfuse_host: str = Field("", env="LANGFUSE_HOST")
+
     # Support public/secret key pair if available
     langfuse_public_key: str = Field("", env="LANGFUSE_PUBLIC_KEY")
     langfuse_secret_key: str = Field("", env="LANGFUSE_SECRET_KEY")
+
     # Tracing config
     tracing_backend: str = Field("langfuse", env="TRACING_BACKEND")
     trace_name: str = Field("ica-trace", env="TRACE_NAME")
@@ -60,9 +61,11 @@ class Settings(BaseSettings):
     ingest_max_file_mb: int = Field(150, env="INGEST_MAX_FILE_MB")
     ingest_max_pages: int = Field(500, env="INGEST_MAX_PAGES")
     ingest_streaming_enabled: bool = Field(False, env="INGEST_STREAMING_ENABLED")
+
     # If a PDF has at least this many pages, prefer streaming NDJSON output
     ingest_stream_pdf_min_pages: int = Field(20, env="INGEST_STREAM_PDF_MIN_PAGES")
     chunk_max_tokens: int = Field(200, env="CHUNK_MAX_TOKENS")
+
     # Section-aware chunking and parsing toggles
     chunk_section_aware_enabled: bool = Field(True, env="CHUNK_SECTION_AWARE_ENABLED")
     chunk_respect_pages: bool = Field(True, env="CHUNK_RESPECT_PAGES")
@@ -83,15 +86,13 @@ class Settings(BaseSettings):
     # Hybrid/dense candidates
     dense_candidates: int = Field(50, env="DENSE_CANDIDATES")
 
-    # Reranking (default to cross-encoder per requirements)
-    reranker_backend: str = Field(
-        "cross-encoder", env="RERANKER_BACKEND"
-    )  # "cross-encoder" | "heuristic"
+    # Reranking
+    reranker_backend: str = Field("cross-encoder", env="RERANKER_BACKEND")
     reranker_model: str = Field(
         "cross-encoder/ms-marco-MiniLM-L-6-v2", env="RERANKER_MODEL"
     )
 
-    # Retrieval thresholding (keep 0.2 as agreed, reuse existing field)
+    # Retrieval thresholding
     rerank_threshold: float = Field(0.2, env="RERANK_THRESHOLD")
 
     # Query refinement toggle (enabled when GEMINI_API_KEY present)
@@ -109,6 +110,6 @@ class Settings(BaseSettings):
     semantic_cache_threshold: float = Field(0.92, env="SEMANTIC_CACHE_THRESHOLD")
     semantic_cache_max_entries: int = Field(1000, env="SEMANTIC_CACHE_MAX_ENTRIES")
 
-    # Rate limiting (enabled per latest requirements)
+    # Rate limiting
     rate_limit_enabled: bool = Field(True, env="RATE_LIMIT_ENABLED")
     rate_limit_per_minute: int = Field(5, env="RATE_LIMIT_PER_MINUTE")
