@@ -61,6 +61,9 @@ def compute_confidence(
 
     rt = _clip01(retrieval_top)
     rm = _clip01(retrieval_mean)
+    # Optional: if retrieval is weak, ignore judge contribution
+    if rt < 0.02 and rm < 0.02:
+        w["judge"] = 0.0
 
     fact = _clip01(eval_scores.get("factuality", 0.0))
     rel = _clip01(eval_scores.get("relevance", 0.0))
