@@ -83,6 +83,14 @@ class EmbedResponse(BaseModel):
     model: str
 
 
+class RetrievalFilters(BaseModel):
+    """Optional per-query filters for retrieval."""
+
+    include_doc_ids: Optional[List[str]] = None
+    include_sources: Optional[List[str]] = None  # matches DocMetadata.source
+    lang: Optional[str] = None  # matches DocMetadata.lang if present
+
+
 class RetrieveRequest(BaseModel):
     """Request body for the retrieval service.
 
@@ -98,6 +106,8 @@ class RetrieveRequest(BaseModel):
     top_k: int = 10
     hybrid: bool = True
     correlation_id: Optional[str] = None
+    filters: Optional[RetrievalFilters] = None
+    dense_candidates: Optional[int] = None
 
 
 class RetrieveResult(BaseModel):
@@ -137,6 +147,8 @@ class QARequest(BaseModel):
     k: int = 5
     use_rerank: bool = True
     reranker: Optional[str] = None
+    filters: Optional[RetrievalFilters] = None
+    dense_candidates: Optional[int] = None
 
 
 class Citation(BaseModel):
@@ -179,6 +191,7 @@ class SummarizeResponse(BaseModel):
     Contains a concise summary, key points, optional citations, and diagnostics.
     """
 
+    doc_id: Optional[str] = None
     summary: str
     key_points: List[str] = []
     citations: List[Citation] = []
