@@ -24,6 +24,16 @@ app = FastAPI(title="Embeddings Service", version="0.1.0")
 install_fastapi_tracing(app, service_name="embeddings")
 
 
+@app.get("/")
+def _root():
+    return {"status": "ok", "service": "api-gateway"}
+
+
+@app.get("/health")
+def _health():
+    return {"status": "ok"}
+
+
 @app.post("/embed", response_model=EmbedResponse)
 async def embed(request: EmbedRequest) -> EmbedResponse:
     """Generate embeddings for a list of document chunks."""

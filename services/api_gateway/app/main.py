@@ -50,6 +50,17 @@ except Exception:
 app = FastAPI(title="API Gateway", version="0.1.0")
 install_fastapi_tracing(app, service_name="api-gateway")
 
+
+@app.get("/")
+def _root():
+    return {"status": "ok", "service": "api-gateway"}
+
+
+@app.get("/health")
+def _health():
+    return {"status": "ok"}
+
+
 allowed = [
     os.getenv(
         "STREAMLIT_APP_ORIGIN",

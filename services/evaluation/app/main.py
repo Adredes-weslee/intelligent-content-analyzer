@@ -31,6 +31,17 @@ from .metrics import (
 app = FastAPI(title="Evaluation Service", version="0.2.0")
 install_fastapi_tracing(app, service_name="evaluation")
 
+
+@app.get("/")
+def _root():
+    return {"status": "ok", "service": "api-gateway"}
+
+
+@app.get("/health")
+def _health():
+    return {"status": "ok"}
+
+
 _settings = Settings()
 
 _genai = None

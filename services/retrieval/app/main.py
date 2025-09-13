@@ -48,6 +48,17 @@ from .faiss_store import search as faiss_search
 app = FastAPI(title="Retrieval Service", version="0.1.0")
 install_fastapi_tracing(app, service_name="retrieval")
 
+
+@app.get("/")
+def _root():
+    return {"status": "ok", "service": "api-gateway"}
+
+
+@app.get("/health")
+def _health():
+    return {"status": "ok"}
+
+
 INDEX: List[DocChunk] = []
 DENSE_VECTORS: List[List[float]] = []
 VEC_BY_CHUNK_ID: Dict[str, List[float]] = {}

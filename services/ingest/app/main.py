@@ -41,6 +41,16 @@ _settings = Settings()
 install_fastapi_tracing(app, service_name="ingest")
 
 
+@app.get("/")
+def _root():
+    return {"status": "ok", "service": "api-gateway"}
+
+
+@app.get("/health")
+def _health():
+    return {"status": "ok"}
+
+
 @app.post(
     "/ingest",
     openapi_extra={

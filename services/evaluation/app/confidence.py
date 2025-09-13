@@ -54,7 +54,8 @@ def compute_confidence(
         "relevance": 0.15,
         "completeness": 0.10,
         "faithfulness": 0.10,
-        "judge": 0.05,
+        "judge": 0.01,
+        "ctx_ratio": 0.09,
     }
     if weights:
         w.update(weights)
@@ -68,6 +69,7 @@ def compute_confidence(
     rel = _clip01(eval_scores.get("relevance", 0.0))
     comp = _clip01(eval_scores.get("completeness", 0.0))
     faith = _clip01(eval_scores.get("faithfulness", 0.0))
+    ctx = _clip01(eval_scores.get("context_relevance_ratio", 0.0))
 
     judge_avg = _avg_clip01(judge_scores or {})
 
@@ -79,5 +81,10 @@ def compute_confidence(
         + w["completeness"] * comp
         + w["faithfulness"] * faith
         + w["judge"] * judge_avg
+        + w["ctx_ratio"] * ctx
     )
+
+    if ctx < 0.15 and rt < 0.05 and rm < 0.05:
+        score = min(score, 0.35)
+
     return _clip01(score)

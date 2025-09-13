@@ -46,6 +46,17 @@ from .prompts import GENERATOR_SYSTEM_PROMPT, ROUTER_PROMPT, SUMMARIZER_SYSTEM_P
 app = FastAPI(title="LLM Generation Service", version="0.2.1")
 install_fastapi_tracing(app, service_name="llm-generate")
 
+
+@app.get("/")
+def _root():
+    return {"status": "ok", "service": "api-gateway"}
+
+
+@app.get("/health")
+def _health():
+    return {"status": "ok"}
+
+
 s = Settings()
 
 _GEMINI_API_KEY = s.gemini_api_key
