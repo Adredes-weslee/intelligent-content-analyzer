@@ -33,6 +33,7 @@ import re
 from pathlib import Path
 from typing import Dict, List
 
+import httpx
 from fastapi import FastAPI
 
 from services.embeddings.app.embeddings import embed_texts
@@ -42,6 +43,7 @@ from shared.models import (
     RetrieveResponse,
     RetrieveResult,
 )
+from shared.settings import Settings
 from shared.tracing import install_fastapi_tracing
 
 from .faiss_store import _DOC_MAP_PATH, get_index_dim, init_index, upsert_vectors
@@ -49,6 +51,39 @@ from .faiss_store import search as faiss_search
 
 app = FastAPI(title="Retrieval Service", version="0.1.0")
 install_fastapi_tracing(app, service_name="retrieval")
+
+
+_settings = Settings()
+_EMBED_URL = (os.getenv("EMBEDDINGS_URL") or _settings.embeddings_url or "").rstrip("/")
+
+
+def _embed_texts_http(
+    texts: list[str], dim: int | None = None, batch_size: int = 16
+) -> list[list[float]]:
+    if not _EMBED_URL:
+        raise RuntimeError("EMBEDDINGS_URL not configured")
+    payload = {"texts": texts}
+    if dim is not None:
+        payload["dim"] = dim
+    with httpx.Client(
+        timeout=httpx.Timeout(connect=5, read=60, write=10, pool=5)
+    ) as client:
+        r = client.post(f"{_EMBED_URL}/embed", json=payload)
+        r.raise_for_status()
+        return r.json().get("embeddings", [])
+
+
+def embed_texts_auto(
+    texts: list[str], *, dim: int | None = None, batch_size: int = 16
+) -> list[list[float]]:
+    # Prefer remote embeddings when configured; fall back to local model.
+    if _EMBED_URL:
+        try:
+            return _embed_texts_http(texts, dim=dim, batch_size=batch_size)
+        except Exception:
+            # Fallback to local on error
+            pass
+    return embed_texts(texts, batch_size=batch_size, dim=dim)
 
 
 @app.get("/")
@@ -209,7 +244,7 @@ def add_chunks(chunks: List[DocChunk]) -> int:
     if not chunks:
         return 0
     texts = [c.text for c in chunks]
-    vecs = embed_texts(texts, batch_size=16, dim=get_index_dim())
+    vecs = embed_texts_auto(texts, dim=get_index_dim(), batch_size=16)
     count = 0
     try:
         upsert_vectors([c.id for c in chunks], vecs)
@@ -310,7 +345,7 @@ async def search(req: RetrieveRequest) -> RetrieveResponse:
         for t in unique_q
     }
 
-    q_vecs = embed_texts([req.query], dim=get_index_dim())
+    q_vecs = embed_texts_auto([req.query], dim=get_index_dim(), batch_size=1)
     qv = _normalize([float(x) for x in q_vecs[0]]) if q_vecs else []
 
     faiss_scores: Dict[str, float] = {}
