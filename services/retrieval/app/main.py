@@ -53,7 +53,7 @@ install_fastapi_tracing(app, service_name="retrieval")
 
 @app.get("/")
 def _root():
-    return {"status": "ok", "service": "api-gateway"}
+    return {"status": "ok", "service": "retrieval"}
 
 
 @app.get("/health")
@@ -77,6 +77,37 @@ def _status():
         "doc_map_exists": Path(_DOC_MAP_PATH).exists(),
         "sample_ids": list(CHUNK_BY_ID.keys())[:5],
     }
+
+
+# NEW: public status endpoint used by the API Gateway
+@app.get("/status")
+def status():
+    # Prefer env var; fall back to sibling of doc_map.json
+    faiss_path = os.getenv("FAISS_INDEX_PATH") or str(
+        Path(_DOC_MAP_PATH).with_name("faiss.index")
+    )
+    return {
+        "indexed": len(INDEX),
+        "doc_map_path": str(_DOC_MAP_PATH),
+        "doc_map_exists": Path(_DOC_MAP_PATH).exists(),
+        "faiss_path": faiss_path,
+        "faiss_exists": Path(faiss_path).exists(),
+        "sample_ids": list(CHUNK_BY_ID.keys())[:5],
+    }
+
+
+@app.get("/chunks_by_doc")
+def chunks_by_doc(doc_id: str, max_chunks: int | None = None) -> dict:
+    """Return chunks for a given doc_id (used by summarization)."""
+    limit = max_chunks or 50
+    items = [c for c in INDEX if getattr(c, "doc_id", None) == doc_id][:limit]
+    try:
+        chunks = [c.dict() for c in items]
+    except Exception:
+        chunks = [
+            c if isinstance(c, dict) else getattr(c, "__dict__", {}) for c in items
+        ]
+    return {"chunks": chunks}
 
 
 def _l2_norm(v: List[float]) -> float:
