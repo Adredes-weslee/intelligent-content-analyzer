@@ -9,8 +9,8 @@ WORKDIR /app
 COPY requirements.txt /tmp/requirements.txt
 RUN python -m pip install --upgrade pip && pip install -r /tmp/requirements.txt
 
-COPY services/retrieval/app /app/app
-COPY shared /app/shared
+COPY . /app
+
 
 ENV PYTHONPATH=/app
 EXPOSE 8000
