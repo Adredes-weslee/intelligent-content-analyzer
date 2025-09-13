@@ -70,7 +70,8 @@ def _embed_texts_http(
     ) as client:
         r = client.post(f"{_EMBED_URL}/embed", json=payload)
         r.raise_for_status()
-        return r.json().get("embeddings", [])
+        data = r.json()
+        return data.get("embeddings") or data.get("vectors") or []
 
 
 def embed_texts_auto(
