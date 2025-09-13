@@ -2,10 +2,7 @@
 
 Exposes /embed to convert a list of DocChunk texts into dense vectors.
 Behavior:
-- Delegates to services.embeddings.app.embeddings.embed_texts, which uses:
-  - deterministic vectors in offline mode,
-  - Gemini embeddings when configured,
-  - or random vectors as a fallback.
+- Delegates to services.embeddings.app.embeddings.embed_texts (deterministic).
 - Returns vectors and the configured embedding model name in EmbedResponse.
 
 This service keeps no state and performs no storage; clients are expected
@@ -29,14 +26,7 @@ install_fastapi_tracing(app, service_name="embeddings")
 
 @app.post("/embed", response_model=EmbedResponse)
 async def embed(request: EmbedRequest) -> EmbedResponse:
-    """Generate random embeddings for a list of document chunks.
-
-    Args:
-        request: The embedding request containing document chunks.
-
-    Returns:
-        An object containing a list of vectors and the model name.
-    """
+    """Generate embeddings for a list of document chunks."""
     texts = [c.text for c in request.chunks]
     with span("embeddings.embed", num_texts=len(texts), model=settings.embedding_model):
         vectors = embed_texts(texts)
