@@ -23,6 +23,7 @@ The mapping and checksum/doc tracking share a JSON file defined by
 from __future__ import annotations
 
 import json
+import logging
 import os
 from typing import Dict, Iterable, List, Optional, Tuple
 
@@ -46,6 +47,15 @@ _index = None
 _dim: int = _s.embedding_dim
 _chunk_to_fid: Dict[str, int] = {}
 _fid_to_chunk: Dict[int, str] = {}
+
+
+def get_index_dim() -> int:
+    """Return the active FAISS index dimension (falls back to settings)."""
+    global _dim
+    try:
+        return int(_dim or _s.embedding_dim or 768)
+    except Exception:
+        return 768
 
 
 def _ensure_dirs(path: str) -> None:
@@ -81,17 +91,19 @@ def init_index(dim: Optional[int] = None) -> None:
     global _index, _dim, _chunk_to_fid, _fid_to_chunk
     if faiss is None:
         return
-    _dim = int(dim or _s.embedding_dim or 128)
+    _dim = int(dim or _s.embedding_dim or 768)
     if os.path.exists(_INDEX_PATH):
         try:
             _index = faiss.read_index(_INDEX_PATH)
+            # Sync dim to loaded index if available
+            try:
+                _dim = int(getattr(_index, "d", _dim))
+            except Exception:
+                pass
         except Exception:
             _index = None
     if _index is None:
-        if _METRIC == "l2":
-            base = faiss.IndexFlatL2(_dim)
-        else:
-            base = faiss.IndexFlatIP(_dim)
+        base = faiss.IndexFlatL2(_dim) if _METRIC == "l2" else faiss.IndexFlatIP(_dim)
         _index = faiss.IndexIDMap2(base)
     # Load mapping
     m = _load_doc_map()
@@ -105,8 +117,8 @@ def _persist() -> None:
     _ensure_dirs(_INDEX_PATH)
     try:
         faiss.write_index(_index, _INDEX_PATH)
-    except Exception:
-        pass
+    except Exception as e:
+        logging.error(f"Failed to persist FAISS index to {_INDEX_PATH}: {e}")
     # Save mapping
     m = _load_doc_map()
     m["chunk_to_faiss_id"] = {k: int(v) for k, v in _chunk_to_fid.items()}
@@ -171,6 +183,11 @@ def upsert_vectors(chunk_ids: List[str], vectors: List[List[float]]) -> None:
     """Replace vectors for the given chunk IDs if present, else add them."""
     if faiss is None or _index is None:
         return
+    # Ensure index dimension matches incoming vectors
+    if vectors:
+        dim = len(vectors[0])
+        if dim != _dim:
+            init_index(dim)
     to_add_cids: List[str] = []
     to_add_vecs: List[List[float]] = []
     to_replace: List[int] = []
