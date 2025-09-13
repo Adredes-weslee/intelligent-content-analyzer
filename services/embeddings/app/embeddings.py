@@ -22,140 +22,183 @@ Environment:
 from __future__ import annotations
 
 import hashlib
-import os
 from typing import List, Optional
-
-import numpy as np
 
 from shared.settings import Settings
 
 settings = Settings()
 
-_GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-_GEMINI_EMBED_MODEL = os.getenv("GEMINI_EMBEDDING_MODEL", "gemini-embedding-001")
+_GEMINI_API_KEY = settings.gemini_api_key
+_GEMINI_EMBED_MODEL = settings.embedding_model
 
 genai = None
 if _GEMINI_API_KEY and not settings.offline_mode:
     try:
-        import google.generativeai as genai  # type: ignore
+        from google import genai  # type: ignore
 
         genai.configure(api_key=_GEMINI_API_KEY)
     except Exception:
         genai = None
 
 
-def _deterministic_embed(text: str, dim: int = 128) -> List[float]:
+def _deterministic_embed(text: str, dim: int = 768) -> List[float]:
     h = hashlib.sha256(text.encode("utf-8")).digest()
     buf = (h * ((dim // len(h)) + 1))[:dim]
     return [b / 255.0 for b in buf]
 
 
 def embed_texts(
-    texts: List[str], dim: int = 128, batch_size: Optional[int] = None
+    texts: List[str], batch_size: int = 16, dim: Optional[int] = None
 ) -> List[List[float]]:
-    """Return embeddings for texts using Gemini if available; else random.
-
-    If possible, uses simple batching to reduce API calls. Falls back to
-    per‑item requests if batch call is unsupported or fails.
     """
-    # Use Settings-derived defaults
-    try:
-        s = Settings()
-        dim = s.embedding_dim or dim
-        if s.offline_mode:
-            return [_deterministic_embed(t, dim) for t in texts]
-    except Exception:
-        pass
+    Return embeddings for texts.
+    - If Settings.offline_mode: deterministic vectors with requested dim (or settings.embedding_dim).
+    - If GEMINI available: request output_dimensionality=dim and use batch API when available.
+    - Else: random normalized vectors.
+    """
+    global genai
+    s = settings
+    target_dim = int(dim or s.embedding_dim or 768)
 
-    if genai is None:
-        return [np.random.rand(dim).tolist() for _ in texts]
+    # Offline mode: deterministic, reproducible vectors
+    if s.offline_mode:
+        return [_deterministic_embed(t, target_dim) for t in texts]
 
-    vectors: List[List[float]] = []
-    bsz = batch_size or max(16, len(texts))
-    # Try batch path first
-    try:
-        if hasattr(genai, "embed_content") and bsz > 1:
-            for i in range(0, len(texts), bsz):
-                chunk = texts[i : i + bsz]
-                try:
-                    resp = genai.embed_content(model=_GEMINI_EMBED_MODEL, content=chunk)
-                    # Common shape: { embeddings: [ { values: [...] }, ...] }
-                    data = None
-                    if isinstance(resp, dict):
-                        data = resp.get("embeddings") or resp.get("data")
-                    if data and isinstance(data, list):
-                        for item in data:
-                            vec = (
-                                item.get("values")
-                                or item.get("embedding")
-                                or item.get("vector")
-                            )
-                            if (
-                                not vec
-                                and isinstance(item, dict)
-                                and "embedding" in item
-                            ):
-                                emb = item.get("embedding") or {}
-                                vec = emb.get("values") or emb.get("embedding")
-                            vectors.append(
-                                [
-                                    float(x)
-                                    for x in (vec or np.random.rand(dim).tolist())
-                                ]
-                            )
-                    else:
-                        # Unknown shape; fall back to per‑item
-                        raise ValueError("Unexpected batch embedding response shape")
-                except Exception:
-                    # Batch failed; fall back to per‑item for this chunk
-                    for t in chunk:
+    # Gemini path (best-effort)
+    if _GEMINI_API_KEY:
+        if genai is None:
+            try:
+                from google import genai  # type: ignore
+
+                genai.configure(api_key=_GEMINI_API_KEY)
+            except Exception:
+                genai = None
+        if genai is not None:
+            out: List[List[float]] = []
+            bsz = max(1, int(batch_size or 16))
+            try:
+                # Use batch API if available
+                if hasattr(genai, "batch_embed_contents") and bsz > 1:
+                    for i in range(0, len(texts), bsz):
+                        chunk = texts[i : i + bsz]
+                        try:
+                            reqs = [
+                                {"content": t, "output_dimensionality": target_dim}
+                                for t in chunk
+                            ]
+                            resp = genai.batch_embed_contents(
+                                model=_GEMINI_EMBED_MODEL, requests=reqs
+                            )  # type: ignore[attr-defined]
+                            data = None
+                            if isinstance(resp, dict):
+                                data = resp.get("embeddings") or resp.get("data")
+                            elif hasattr(resp, "embeddings"):
+                                data = getattr(resp, "embeddings", None)
+                            if data and isinstance(data, list):
+                                for item in data:
+                                    vec = (
+                                        item.get("values")
+                                        if isinstance(item, dict)
+                                        else None
+                                    ) or (
+                                        item.get("embedding")
+                                        if isinstance(item, dict)
+                                        else None
+                                    )
+                                    if isinstance(vec, dict):
+                                        vec = vec.get("values") or vec.get("embedding")
+                                    if not vec:
+                                        raise ValueError("No embedding in batch item")
+                                    out.append([float(x) for x in vec])
+                            else:
+                                # Unexpected shape; fall back to per-item for this chunk
+                                raise ValueError("Unexpected batch response shape")
+                        except Exception:
+                            for t in chunk:
+                                try:
+                                    single = genai.embed_content(
+                                        model=_GEMINI_EMBED_MODEL,
+                                        content=t,
+                                        output_dimensionality=target_dim,
+                                    )
+                                    vec = None
+                                    if isinstance(single, dict):
+                                        emb = single.get("embedding")
+                                        if isinstance(emb, dict):
+                                            vec = emb.get("values") or emb.get(
+                                                "embedding"
+                                            )
+                                        else:
+                                            vec = (
+                                                emb
+                                                or single.get("values")
+                                                or single.get("vector")
+                                            )
+                                    else:
+                                        emb = getattr(single, "embedding", None)
+                                        vec = (
+                                            (emb.get("values") or emb.get("embedding"))
+                                            if isinstance(emb, dict)
+                                            else emb
+                                        )
+                                    if not vec:
+                                        raise ValueError("No embedding in response")
+                                    out.append([float(x) for x in vec])
+                                except Exception:
+                                    import random
+
+                                    v = [
+                                        random.uniform(-1, 1) for _ in range(target_dim)
+                                    ]
+                                    n = sum(x * x for x in v) ** 0.5 or 1.0
+                                    out.append([x / n for x in v])
+                    return out
+                else:
+                    # Per-item path (no batch API)
+                    for t in texts:
                         try:
                             single = genai.embed_content(
-                                model=_GEMINI_EMBED_MODEL, content=t
+                                model=_GEMINI_EMBED_MODEL,
+                                content=t,
+                                output_dimensionality=target_dim,
                             )
                             vec = None
                             if isinstance(single, dict):
-                                vec = (
-                                    single.get("values")
-                                    or (single.get("embedding") or {}).get("values")
-                                    or (single.get("embedding") or {}).get("embedding")
-                                )
+                                emb = single.get("embedding")
+                                if isinstance(emb, dict):
+                                    vec = emb.get("values") or emb.get("embedding")
+                                else:
+                                    vec = (
+                                        emb
+                                        or single.get("values")
+                                        or single.get("vector")
+                                    )
                             else:
                                 emb = getattr(single, "embedding", None)
                                 vec = (
-                                    getattr(emb, "values", None)
-                                    if emb is not None
-                                    else None
+                                    (emb.get("values") or emb.get("embedding"))
+                                    if isinstance(emb, dict)
+                                    else emb
                                 )
-                            vectors.append(
-                                [
-                                    float(x)
-                                    for x in (vec or np.random.rand(dim).tolist())
-                                ]
-                            )
+                            if not vec:
+                                raise ValueError("No embedding in response")
+                            out.append([float(x) for x in vec])
                         except Exception:
-                            vectors.append(np.random.rand(dim).tolist())
-        else:
-            raise ValueError("Batch path not supported; using single requests")
-    except Exception:
-        # Per‑item path
-        vectors = []
-        for t in texts:
-            try:
-                single = genai.embed_content(model=_GEMINI_EMBED_MODEL, content=t)
-                vec = None
-                if isinstance(single, dict):
-                    vec = (
-                        single.get("values")
-                        or (single.get("embedding") or {}).get("values")
-                        or (single.get("embedding") or {}).get("embedding")
-                    )
-                else:
-                    emb = getattr(single, "embedding", None)
-                    vec = getattr(emb, "values", None) if emb is not None else None
-                vectors.append(
-                    [float(x) for x in (vec or np.random.rand(dim).tolist())]
-                )
+                            import random
+
+                            v = [random.uniform(-1, 1) for _ in range(target_dim)]
+                            n = sum(x * x for x in v) ** 0.5 or 1.0
+                            out.append([x / n for x in v])
+                    return out
             except Exception:
-                vectors.append(np.random.rand(dim).tolist())
-    return vectors
+                pass  # fall through to random
+
+    # Final fallback: random normalized vectors
+    import random
+
+    out: List[List[float]] = []
+    for _t in texts:
+        v = [random.uniform(-1, 1) for _ in range(target_dim)]
+        n = sum(x * x for x in v) ** 0.5 or 1.0
+        out.append([x / n for x in v])
+    return out
