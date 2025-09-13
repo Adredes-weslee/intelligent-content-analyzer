@@ -43,11 +43,12 @@ from shared.models import (
     RetrieveResponse,
     RetrieveResult,
 )
+from shared.tracing import install_fastapi_tracing
 
 from .faiss_store import get_index_dim, init_index, upsert_vectors
 
 app = FastAPI(title="Retrieval Service", version="0.1.0")
-
+install_fastapi_tracing(app, service_name="retrieval")
 # In‑memory list of indexed chunks
 INDEX: List[DocChunk] = []
 # Parallel dense vectors and lookup by chunk id
