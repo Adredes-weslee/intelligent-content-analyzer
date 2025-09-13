@@ -1,0 +1,86 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "API Gateway",
+      "type": "python",
+      "request": "launch",
+      "module": "uvicorn",
+      "args": ["services.api_gateway.app.main:app", "--reload", "--host", "127.0.0.1", "--port", "9000"],
+      "cwd": "${workspaceFolder}",
+      "envFile": "${workspaceFolder}/.env",
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "Ingest",
+      "type": "python",
+      "request": "launch",
+      "module": "uvicorn",
+      "args": ["services.ingest.app.main:app", "--reload", "--host", "127.0.0.1", "--port", "8001"],
+      "cwd": "${workspaceFolder}",
+      "envFile": "${workspaceFolder}/.env",
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "Retrieval",
+      "type": "python",
+      "request": "launch",
+      "module": "uvicorn",
+      "args": ["services.retrieval.app.main:app", "--reload", "--host", "127.0.0.1", "--port", "8002"],
+      "cwd": "${workspaceFolder}",
+      "envFile": "${workspaceFolder}/.env",
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "Embeddings",
+      "type": "python",
+      "request": "launch",
+      "module": "uvicorn",
+      "args": ["services.embeddings.app.main:app", "--reload", "--host", "127.0.0.1", "--port", "8004"],
+      "cwd": "${workspaceFolder}",
+      "envFile": "${workspaceFolder}/.env",
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "LLM Generate",
+      "type": "python",
+      "request": "launch",
+      "module": "uvicorn",
+      "args": ["services.llm_generate.app.main:app", "--reload", "--host", "127.0.0.1", "--port", "8005"],
+      "cwd": "${workspaceFolder}",
+      "envFile": "${workspaceFolder}/.env",
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "Evaluation",
+      "type": "python",
+      "request": "launch",
+      "module": "uvicorn",
+      "args": ["services.evaluation.app.main:app", "--reload", "--host", "127.0.0.1", "--port", "8006"],
+      "cwd": "${workspaceFolder}",
+      "envFile": "${workspaceFolder}/.env",
+      "console": "integratedTerminal",
+      "justMyCode": true
+    }
+  ],
+  "compounds": [
+    {
+      "name": "Full Stack (All Services)",
+      "configurations": [
+        "API Gateway",
+        "Ingest",
+        "Retrieval",
+        "Embeddings",
+        "LLM Generate",
+        "Evaluation"
+      ],
+      "stopAll": true
+    }
+  ]
+}
+}
