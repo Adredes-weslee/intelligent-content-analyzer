@@ -1,0 +1,48 @@
+name: intelligent-content-analyzer
+channels:
+  - conda-forge
+  - pytorch
+  - defaults
+dependencies:
+  # Core
+  - python=3.10.18
+  - pip=25.2
+
+  # Web stack
+  - fastapi=0.116.1
+  - uvicorn=0.35.0
+  - pydantic=2.11.7
+  - httpx=0.28.1
+  - python-multipart=0.0.20
+  - redis-py=6.4.0
+
+  # Numerics
+  - numpy=1.26.4
+
+  # Retrieval / ML (CPU)
+  - faiss-cpu=1.9.0
+  - pytorch=2.5.1
+  - torchvision=0.20.1
+  - torchaudio=2.5.1
+  - cpuonly=2.0
+
+  # Ingestion / parsing (conda-safe)
+  - pypdf2=3.0.1
+  - python-docx=1.2.0
+  - python-pptx=1.0.2
+  - beautifulsoup4=4.13.5
+  - html5lib=1.1
+  - markdown-it-py=4.0.0
+  - pillow=11.3.0
+  - langdetect=1.0.9
+
+  # Pip-only or solver-friendly via pip
+  - pip:
+      - sentence-transformers==5.1.0
+      - pdfplumber==0.11.7
+      - pypdfium2==4.30.0
+      - google-generativeai==0.8.5
+      - langfuse==3.3.4
+      - pytest==8.4.2 
+      - pydantic-settings== 2.10.1
+      - pandas==2.3.2
