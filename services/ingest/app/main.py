@@ -43,7 +43,7 @@ install_fastapi_tracing(app, service_name="ingest")
 
 @app.get("/")
 def _root():
-    return {"status": "ok", "service": "api-gateway"}
+    return {"status": "ok", "service": "ingest"}
 
 
 @app.get("/health")
