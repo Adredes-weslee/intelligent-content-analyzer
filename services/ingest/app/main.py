@@ -21,6 +21,8 @@ import datetime
 import hashlib
 import io
 import mimetypes
+import os
+import re
 import uuid
 
 from fastapi import FastAPI, HTTPException, Request
@@ -29,16 +31,32 @@ from langdetect import detect  # type: ignore
 
 from shared.models import DocChunk, DocMetadata
 from shared.settings import Settings
-from shared.tracing import span
+from shared.tracing import install_fastapi_tracing, span, tracer
 
 from .chunkers import chunk_text, iter_section_chunks
 from .readers import parse_document, stream_pdf_pages
 
 app = FastAPI(title="Ingest Service", version="0.1.0")
 _settings = Settings()
+install_fastapi_tracing(app, service_name="ingest")
 
 
-@app.post("/ingest")
+@app.post(
+    "/ingest",
+    openapi_extra={
+        "requestBody": {
+            "content": {
+                "multipart/form-data": {
+                    "schema": {
+                        "type": "object",
+                        "properties": {"file": {"type": "string", "format": "binary"}},
+                        "required": ["file"],
+                    }
+                }
+            }
+        }
+    },
+)
 async def ingest(request: Request):
     """Process an uploaded document into a set of chunks.
 
@@ -56,14 +74,18 @@ async def ingest(request: Request):
         raise HTTPException(
             status_code=400, detail="Content-Type must be multipart/form-data"
         )
-    # Extract boundary from header (e.g. boundary=----WebKitFormBoundary12345)
+    # Extract boundary from header and sanitize quotes/extra params
     boundary_marker = "boundary="
     if boundary_marker not in content_type:
         raise HTTPException(status_code=400, detail="Missing multipart boundary")
-    boundary = content_type.split(boundary_marker, 1)[1]
+    boundary = (
+        content_type.split(boundary_marker, 1)[1].split(";", 1)[0].strip().strip('"')
+    )
+
     body = await request.body()
     file_bytes = None
     filename = "uploaded"
+    part_mime = None
     # Split body by boundary delimiter, ignoring preamble/epilogue
     parts = body.split(b"--" + boundary.encode())
     for part in parts:
@@ -72,15 +94,21 @@ async def ingest(request: Request):
             # Remove trailing CRLF (the part ends with \r\n)
             data = data_section.rsplit(b"\r\n", 1)[0]
             header_str = header.decode(errors="ignore")
-            # Extract filename if present
-            if "filename=" in header_str:
-                filename = header_str.split("filename=")[-1].strip().strip('"')
+            # Extract filename robustly from Content-Disposition
+            m_fn = re.search(r'filename\*?=(?:"([^"]+)"|([^;\r\n]+))', header_str, re.I)
+            if m_fn:
+                raw_fn = (m_fn.group(1) or m_fn.group(2)).strip()
+                filename = os.path.basename(raw_fn)
+            # Prefer part Content-Type if present
+            m_ct = re.search(r"Content-Type:\s*([^\r\n;]+)", header_str, re.I)
+            if m_ct:
+                part_mime = m_ct.group(1).strip()
             file_bytes = data
             break
     if not file_bytes:
         raise HTTPException(status_code=400, detail="No file part provided")
     # Derive content type and checksum
-    mime = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    mime = part_mime or mimetypes.guess_type(filename)[0] or "application/octet-stream"
     checksum = hashlib.sha256(file_bytes).hexdigest()
     created_at = datetime.datetime.utcnow().isoformat()
 
@@ -148,59 +176,66 @@ async def ingest(request: Request):
 
     # Streaming NDJSON path for large PDFs
     def ndjson_stream():
-        with span("ingest.stream_pdf", filename=filename):
-            doc_id = str(uuid.uuid4())
-            # Detect lang incrementally (roughly) by first page text
+        # Keep the span open until the stream finishes
+        stream_span = tracer.start_span("ingest.stream_pdf", filename=filename)
+        # Important: enter the span so it actually starts recording
+        stream_span.__enter__()
+        doc_id = str(uuid.uuid4())
+        # Detect lang incrementally (roughly) by first page text
+        try:
+            g = stream_pdf_pages(file_bytes)
+            first_page = next(g)
             try:
-                g = stream_pdf_pages(file_bytes)
-                first_page = next(g)
-                try:
-                    lang_local = detect(first_page[1])[:2]
-                except Exception:
-                    lang_local = None
+                lang_local = detect(first_page[1])[:2]
+            except Exception:
+                lang_local = None
 
-                # Create a generator that yields the first page then the rest
-                def page_gen():
-                    yield first_page
-                    for item in g:
-                        yield item
-            except StopIteration:
-                # Fallback to simple parse
-                return json_response()
+            # Create a generator that yields the first page then the rest
+            def page_gen():
+                yield first_page
+                for item in g:
+                    yield item
+        except StopIteration:
+            # Close span before fallback
+            stream_span.__exit__(None, None, None)
+            return json_response()
 
-            def iter_ndjson():
-                idx = 0
-                for page_num, page_text in page_gen:
-                    # Feed page_text through section-aware chunker with pages respected
-                    for text, _, section, table_id in iter_section_chunks(
-                        page_text,
-                        max_tokens=_settings.chunk_max_tokens,
-                        respect_pages=True,
-                        respect_headings=_settings.chunk_respect_headings,
-                    ):
-                        meta = DocMetadata(
-                            source=filename,
-                            page=page_num,
-                            section=section,
-                            table_id=table_id,
-                            lang=lang_local,
-                            content_type=mime,
-                            checksum=checksum,
-                            created_at=created_at,
-                        )
-                        chunk = DocChunk(
-                            id=f"{doc_id}_{idx}", doc_id=doc_id, text=text, meta=meta
-                        )
-                        idx += 1
-                        yield (chunk, doc_id)
+        def iter_ndjson():
+            idx = 0
+            for page_num, page_text in page_gen():
+                # Feed page_text through section-aware chunker with pages respected
+                for text, _, section, table_id in iter_section_chunks(
+                    page_text,
+                    max_tokens=_settings.chunk_max_tokens,
+                    respect_pages=True,
+                    respect_headings=_settings.chunk_respect_headings,
+                ):
+                    meta = DocMetadata(
+                        source=filename,
+                        page=page_num,
+                        section=section,
+                        table_id=table_id,
+                        lang=lang_local,
+                        content_type=mime,
+                        checksum=checksum,
+                        created_at=created_at,
+                    )
+                    chunk = DocChunk(
+                        id=f"{doc_id}_{idx}", doc_id=doc_id, text=text, meta=meta
+                    )
+                    idx += 1
+                    yield (chunk, doc_id)
 
-            def encode_ndjson():
-                # Emit a header with doc_id
+        def encode_ndjson():
+            try:
                 yield ("{" + f'"doc_id":"{doc_id}"' + "}\n").encode()
                 for chunk, _doc in iter_ndjson():
                     yield (chunk.json() + "\n").encode()
+            finally:
+                # End the stream span when the stream is done
+                stream_span.__exit__(None, None, None)
 
-            return StreamingResponse(encode_ndjson(), media_type="application/x-ndjson")
+        return StreamingResponse(encode_ndjson(), media_type="application/x-ndjson")
 
     should_stream = False
     if is_pdf and (stream_requested or _settings.ingest_streaming_enabled):
