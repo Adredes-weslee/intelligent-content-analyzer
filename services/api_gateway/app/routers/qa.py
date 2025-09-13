@@ -17,15 +17,15 @@ Tracing spans and diagnostics are emitted for each step.
 
 from __future__ import annotations
 
+import os
 import string
 import uuid
 from typing import List, Optional
 
+import httpx
 from fastapi import APIRouter, HTTPException
 
-from services.llm_generate.app.main import generate_answer as llm_generate
 from services.llm_generate.app.prompts import RETRIEVER_REWRITER_PROMPT
-from services.retrieval.app.hybrid import hybrid_search as retrieval_search
 from services.retrieval.app.rerank import rerank
 from shared.cache import (
     content_fingerprint,
@@ -37,17 +37,64 @@ from shared.cache import (
 from shared.models import (
     Citation,
     EvaluateRequest,
+    EvaluateResponse,
     FeedbackAck,
     FeedbackRequest,
     GenerateRequest,
     QARequest,
     QAResponse,
     RetrieveRequest,
+    RetrieveResponse,
 )
 from shared.settings import Settings
 from shared.tracing import log_event, span
 
 _settings = Settings()
+
+
+RETRIEVAL_URL = (os.getenv("RETRIEVAL_URL") or _settings.retrieval_url or "").rstrip(
+    "/"
+)
+LLM_GENERATE_URL = (
+    os.getenv("LLM_GENERATE_URL") or _settings.llm_generate_url or ""
+).rstrip("/")
+EVALUATION_URL = (os.getenv("EVALUATION_URL") or _settings.evaluation_url or "").rstrip(
+    "/"
+)
+_USE_HTTP = bool(RETRIEVAL_URL and LLM_GENERATE_URL and EVALUATION_URL)
+
+
+async def _post_json(url: str, payload: dict) -> dict:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(10, read=180)) as client:
+        r = await client.post(url, json=payload)
+        r.raise_for_status()
+        return r.json()
+
+
+# Provide callables with the same names as before so the rest of the code stays unchanged.
+if _USE_HTTP:
+
+    async def retrieval_search(req: RetrieveRequest) -> RetrieveResponse:
+        data = await _post_json(f"{RETRIEVAL_URL}/search", req.dict())
+        return RetrieveResponse(**data)
+
+    async def llm_generate(req: GenerateRequest | QARequest) -> QAResponse:
+        data = await _post_json(f"{LLM_GENERATE_URL}/generate", req.dict())
+        return QAResponse(**data)
+
+    async def eval_endpoint(req: EvaluateRequest) -> EvaluateResponse:
+        data = await _post_json(f"{EVALUATION_URL}/evaluate", req.dict())
+        return EvaluateResponse(**data)
+else:
+    # Local in-proc imports (only when no upstream URLs are set)
+    from services.evaluation.app.main import evaluate as eval_endpoint  # type: ignore
+    from services.llm_generate.app.main import (
+        generate_answer as llm_generate,  # type: ignore
+    )
+    from services.retrieval.app.hybrid import (
+        hybrid_search as retrieval_search,  # type: ignore
+    )
+
 _genai = None
 _GEMINI_API_KEY = _settings.gemini_api_key
 if _GEMINI_API_KEY:
@@ -345,8 +392,6 @@ async def ask_question(request: QARequest) -> QAResponse:
 
     # Step 4: Evaluation
     with span("qa.evaluate", corr=correlation_id):
-        from services.evaluation.app.main import evaluate as eval_endpoint
-
         ereq = EvaluateRequest(
             question=request.question,
             answer=answer_text,
@@ -392,6 +437,9 @@ async def ask_question(request: QARequest) -> QAResponse:
             "relevance": float(eval_scores.get("relevance", 0.0) or 0.0),
             "completeness": float(eval_scores.get("completeness", 0.0) or 0.0),
             "faithfulness": float(eval_scores.get("faithfulness", 0.0) or 0.0),
+            "context_relevance_ratio": float(
+                eval_scores.get("context_relevance_ratio", 0.0) or 0.0
+            ),
         },
         judge_scores=judge_scores,
     )
