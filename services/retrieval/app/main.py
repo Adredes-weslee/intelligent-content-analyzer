@@ -1,18 +1,32 @@
-"""Retrieval microservice (lexical + lightweight dense).
+"""Retrieval microservice (BM25 + dense cosine blend; FAISS-assisted).
 
-Maintains an in‑memory index of DocChunk objects and parallel normalized
-dense vectors. Provides two endpoints:
-- POST /index: embeds and appends chunks to the in‑memory stores.
-- POST /search: BM25 keyword retrieval; if `hybrid=True`, blends BM25 and
-  dense cosine scores at a fixed 0.5/0.5 ratio.
+Overview
+- Maintains an in-memory list of DocChunk objects and parallel, L2-normalized
+  dense vectors for each chunk (DENSE_VECTORS, VEC_BY_CHUNK_ID).
+- Endpoints:
+  • POST /index  – embeds incoming chunks and updates in-memory stores and the
+                   optional FAISS index (see faiss_store.upsert_vectors).
+  • POST /search – runs BM25 keyword search; when hybrid=True also computes a
+                   dense similarity score and blends: score = 0.5*bm25 + 0.5*dense.
 
-Implementation notes:
-- Embeddings are produced via services.embeddings.app.embeddings.embed_texts.
-- Dense vectors are normalized and stored in VEC_BY_CHUNK_ID for quick lookup.
-- BM25 uses standard IDF and length normalization; scores are computed over
-  tokenized lower-cased text.
-- For a stronger hybrid with Reciprocal Rank Fusion (RRF) and diagnostics,
-  see services.retrieval.app.hybrid.hybrid_search which the API Gateway uses.
+Algorithms
+- BM25: lower-cased whitespace tokenization, IDF and length normalization.
+- Dense: embeddings via services.embeddings.app.embeddings.embed_texts;
+         vectors are L2-normalized and compared with cosine similarity.
+- FAISS: if available (faiss_store.init_index() succeeded), dense lookup may be
+         accelerated via FAISS; otherwise cosine is computed in Python.
+
+Use this vs hybrid.py
+- /search here is a lightweight hybrid that blends per-chunk scores.
+- For a stronger hybrid that unions top-N BM25 with top-N dense candidates
+  and merges via Reciprocal Rank Fusion (RRF) with diagnostics, use
+  services.retrieval.app.hybrid.hybrid_search from the API Gateway.
+
+Notes & limitations
+- No metadata filters/fielded search in this module.
+- In-memory only (no persistence/sharding); FAISS persistence is handled in
+  services.retrieval.app.faiss_store.
+- Idempotency and document bookkeeping live in the API Gateway.
 """
 
 from __future__ import annotations
@@ -30,7 +44,7 @@ from shared.models import (
     RetrieveResult,
 )
 
-from .faiss_store import init_index, upsert_vectors
+from .faiss_store import get_index_dim, init_index, upsert_vectors
 
 app = FastAPI(title="Retrieval Service", version="0.1.0")
 
@@ -59,13 +73,39 @@ def _cosine(a: List[float], b: List[float]) -> float:
     return sum(x * y for x, y in zip(a, b))
 
 
+def _allow_chunk(filters, chunk) -> bool:
+    if not filters:
+        return True
+    if getattr(filters, "include_doc_ids", None):
+        if chunk.doc_id not in set(filters.include_doc_ids):
+            return False
+    meta = getattr(chunk, "meta", None)
+    src = (
+        getattr(meta, "source", None)
+        if meta and not isinstance(meta, dict)
+        else (meta.get("source") if isinstance(meta, dict) else None)
+    )
+    lang = (
+        getattr(meta, "lang", None)
+        if meta and not isinstance(meta, dict)
+        else (meta.get("lang") if isinstance(meta, dict) else None)
+    )
+    if getattr(filters, "include_sources", None):
+        if src not in set(filters.include_sources):
+            return False
+    if getattr(filters, "lang", None):
+        if lang != filters.lang:
+            return False
+    return True
+
+
 def add_chunks(chunks: List[DocChunk]) -> int:
     """Embed and add chunks to both lexical and dense indexes."""
     if not chunks:
         return 0
     texts = [c.text for c in chunks]
-    # Use a modest batch size to balance memory and latency
-    vecs = embed_texts(texts, batch_size=16)
+    # Embed with FAISS-consistent dimension
+    vecs = embed_texts(texts, batch_size=16, dim=get_index_dim())
     count = 0
     # Upsert into FAISS vector store for persistence
     try:
@@ -107,6 +147,19 @@ def remove_chunks_by_ids(chunk_ids: List[str]) -> int:
     return removed
 
 
+def _unique_hits(hits: List[RetrieveResult]) -> List[RetrieveResult]:
+    """De-duplicate results by chunk.id while keeping first/highest-ranked entry."""
+    seen = set()
+    out: List[RetrieveResult] = []
+    for r in hits:
+        cid = r.chunk.id
+        if cid in seen:
+            continue
+        seen.add(cid)
+        out.append(r)
+    return out
+
+
 @app.post("/index")
 async def index_chunks(chunks: List[dict]) -> dict:
     """Add a list of chunks to the in‑memory index.
@@ -127,20 +180,22 @@ async def search(req: RetrieveRequest) -> RetrieveResponse:
     """Return a ranked list of document chunks matching the query.
 
     Implements BM25 keyword scoring over the in-memory index. Dense
-    retrieval is not yet implemented; when `hybrid` is true we blend
-    BM25 with a placeholder dense score (equal to BM25) to preserve the
-    response contract.
+    retrieval computes cosine similarity against stored vectors. When
+    hybrid=True we blend: 0.5*bm25 + 0.5*dense.
     """
     # Tokenize query
     query_tokens = [t for t in req.query.lower().split() if t]
-    if not query_tokens or not INDEX:
+    candidates: List[DocChunk] = [
+        c for c in INDEX if _allow_chunk(getattr(req, "filters", None), c)
+    ]
+    if not query_tokens or not candidates:
         return RetrieveResponse(hits=[])
 
-    # Precompute corpus statistics
-    doc_terms: List[List[str]] = [c.text.lower().split() for c in INDEX]
+    # Precompute corpus statistics over filtered candidates
+    doc_terms: List[List[str]] = [c.text.lower().split() for c in candidates]
     doc_lens: List[int] = [max(1, len(ts)) for ts in doc_terms]
     avgdl = sum(doc_lens) / len(doc_lens)
-    N = len(INDEX)
+    N = len(candidates)
 
     # BM25 parameters
     k1, b = 1.5, 0.75
@@ -153,12 +208,12 @@ async def search(req: RetrieveRequest) -> RetrieveResponse:
         for t in unique_q
     }
 
-    # Compute query embedding for dense retrieval (normalized)
-    q_vecs = embed_texts([req.query])
+    # Compute query embedding for dense retrieval (normalized), using FAISS dim
+    q_vecs = embed_texts([req.query], dim=get_index_dim())
     qv = _normalize([float(x) for x in q_vecs[0]]) if q_vecs else []
 
     results: List[RetrieveResult] = []
-    for i, chunk in enumerate(INDEX):
+    for i, chunk in enumerate(candidates):
         terms = doc_terms[i]
         dl = doc_lens[i]
         bm25_score = 0.0
@@ -186,10 +241,12 @@ async def search(req: RetrieveRequest) -> RetrieveResponse:
         )
 
     results.sort(key=lambda r: r.score, reverse=True)
+    results = _unique_hits(results)
     top_hits = results[: req.top_k]
     diag = {
         "mode": "hybrid" if req.hybrid else "bm25",
         "top_k": req.top_k,
-        "bm25_scores": {c.id: r.bm25 for c, r in zip([c for c in INDEX], results)},
+        "filtered": True if getattr(req, "filters", None) else False,
+        "bm25_scores": {c.id: r.bm25 for c, r in zip([c for c in candidates], results)},
     }
     return RetrieveResponse(hits=top_hits, diagnostics=diag)
