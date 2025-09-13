@@ -13,9 +13,11 @@ requests to the other services.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from shared.tracing import install_fastapi_tracing
 
@@ -46,6 +48,25 @@ except Exception:
 
 app = FastAPI(title="API Gateway", version="0.1.0")
 install_fastapi_tracing(app, service_name="api-gateway")
+
+allowed = [
+    os.getenv(
+        "STREAMLIT_APP_ORIGIN", ""
+    ),  # e.g. https://<user>-<repo>-<branch>.streamlit.app
+    "http://localhost:8501",
+]
+allowed = [o for o in allowed if o]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "*"
+    ],  # TODO: replace with your Streamlit app domain for stricter security
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 app.include_router(upload.router, prefix="", tags=["upload"])
 app.include_router(qa.router, prefix="", tags=["qa"])
