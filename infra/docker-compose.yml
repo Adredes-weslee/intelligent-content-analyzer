@@ -6,6 +6,26 @@ services:
     ports:
       - "6379:6379"
 
+  # Optional: Langfuse observability stack
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=langfuse
+    ports:
+      - "5432:5432"
+
+  langfuse:
+    image: ghcr.io/langfuse/langfuse:latest
+    environment:
+      - NEXTAUTH_URL=http://localhost:3000
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/langfuse
+      - NEXTAUTH_SECRET=devsecret
+    depends_on:
+      - postgres
+    ports:
+      - "3000:3000"
+
   ingest:
     build: ../services/ingest
     environment:
