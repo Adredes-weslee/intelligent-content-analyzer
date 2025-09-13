@@ -51,17 +51,16 @@ install_fastapi_tracing(app, service_name="api-gateway")
 
 allowed = [
     os.getenv(
-        "STREAMLIT_APP_ORIGIN", ""
-    ),  # e.g. https://<user>-<repo>-<branch>.streamlit.app
+        "STREAMLIT_APP_ORIGIN",
+        "https://adredes-weslee-intelligent-content-analyzer-uiapp-stwg9a.streamlit.app",
+    ),
     "http://localhost:8501",
 ]
-allowed = [o for o in allowed if o]
+allowed = [o.rstrip("/") for o in allowed if o]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "*"
-    ],  # TODO: replace with your Streamlit app domain for stricter security
+    allow_origins=allowed,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
