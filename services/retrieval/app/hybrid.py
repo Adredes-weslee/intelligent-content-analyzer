@@ -14,6 +14,7 @@ generation.
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from typing import Dict, List, Tuple
 
 from services.embeddings.app.embeddings import embed_texts
@@ -21,6 +22,7 @@ from shared.models import RetrieveRequest, RetrieveResponse, RetrieveResult
 from shared.settings import Settings
 from shared.tracing import log_event, span
 
+from .faiss_store import get_index_dim
 from .faiss_store import search as faiss_search
 from .main import INDEX as _INDEX
 from .main import search as bm25_search
@@ -36,6 +38,34 @@ def _cosine_sim(a: Dict[str, int], b: Dict[str, int]) -> float:
     return num / (da * db)
 
 
+def _allow_chunk(filters, chunk) -> bool:
+    if not filters:
+        return True
+    # doc_id filter
+    if getattr(filters, "include_doc_ids", None):
+        if chunk.doc_id not in set(filters.include_doc_ids):
+            return False
+    # source/lang from meta
+    meta = getattr(chunk, "meta", None)
+    src = (
+        getattr(meta, "source", None)
+        if meta and not isinstance(meta, dict)
+        else (meta.get("source") if isinstance(meta, dict) else None)
+    )
+    lang = (
+        getattr(meta, "lang", None)
+        if meta and not isinstance(meta, dict)
+        else (meta.get("lang") if isinstance(meta, dict) else None)
+    )
+    if getattr(filters, "include_sources", None):
+        if src not in set(filters.include_sources):
+            return False
+    if getattr(filters, "lang", None):
+        if lang != filters.lang:
+            return False
+    return True
+
+
 async def hybrid_search(request: RetrieveRequest) -> RetrieveResponse:
     """Perform a hybrid search combining keyword and dense retrieval."""
     s = Settings()
@@ -49,10 +79,16 @@ async def hybrid_search(request: RetrieveRequest) -> RetrieveResponse:
         # 1) BM25 baseline
         bm25_resp = await bm25_search(request)
     bm25_hits = bm25_resp.hits
+    # Apply per-query filters to bm25 hits
+    bm25_hits = [
+        h for h in bm25_hits if _allow_chunk(getattr(request, "filters", None), h.chunk)
+    ]
     bm25_ids = [h.chunk.id for h in bm25_hits]
 
-    # Helper: chunk lookup
-    id2chunk = {c.id: c for c in _INDEX}
+    # Helper: chunk lookup (filtered)
+    id2chunk = {
+        c.id: c for c in _INDEX if _allow_chunk(getattr(request, "filters", None), c)
+    }
 
     # 2) Dense ranking
     dense_scores: Dict[str, float] = {}
@@ -60,25 +96,30 @@ async def hybrid_search(request: RetrieveRequest) -> RetrieveResponse:
     dense_results: List[Tuple[str, float]] = []
     try:
         # Embed query once
-        qv = embed_texts([request.query])[0]
-        # Candidate size for dense search
-        dense_k = max(s.dense_candidates, request.top_k * 3)
+        qv = embed_texts([request.query], dim=get_index_dim())[0]
+        # Candidate size for dense search (allow per-request override)
+        dense_k = max(
+            (getattr(request, "dense_candidates", None) or s.dense_candidates),
+            request.top_k * 3,
+        )
         faiss_out = faiss_search(qv, top_k=dense_k)
         if faiss_out:
             used_faiss = True
             metric = (s.faiss_metric or "ip").lower()
             for cid, dist in faiss_out:
-                score = float(-dist) if metric == "l2" else float(dist)
-                dense_results.append((cid, score))
+                # Keep only allowed chunks per filters
+                if cid in id2chunk:
+                    score = float(-dist) if metric == "l2" else float(dist)
+                    dense_results.append((cid, score))
         else:
             raise RuntimeError("faiss returned no results")
     except Exception:
-        # Fallback: BoW-cosine dense proxy over the whole index
+        # Fallback: BoW-cosine dense proxy over the whole filtered index
         q_tokens = [t for t in request.query.lower().split() if t]
         q_bow: Dict[str, int] = {}
         for t in q_tokens:
             q_bow[t] = q_bow.get(t, 0) + 1
-        for c in _INDEX:
+        for c in id2chunk.values():
             c_tokens = [t for t in c.text.lower().split() if t]
             c_bow: Dict[str, int] = {}
             for t in c_tokens:
@@ -87,7 +128,12 @@ async def hybrid_search(request: RetrieveRequest) -> RetrieveResponse:
 
     # Keep top‑N dense candidates
     dense_results.sort(key=lambda kv: kv[1], reverse=True)
-    top_dense = dense_results[: max(s.dense_candidates, request.top_k * 3)]
+    top_dense = dense_results[
+        : max(
+            (getattr(request, "dense_candidates", None) or s.dense_candidates),
+            request.top_k * 3,
+        )
+    ]
     dense_scores.update({cid: score for cid, score in top_dense})
     dense_ids = [cid for cid, _ in top_dense]
 
@@ -122,6 +168,26 @@ async def hybrid_search(request: RetrieveRequest) -> RetrieveResponse:
             )
         )
 
+    # Deduplicate by chunk.id (safety; keep highest component scores)
+    merged: "OrderedDict[str, RetrieveResult]" = OrderedDict()
+    for r in combined:
+        cid = r.chunk.id
+        if cid not in merged:
+            merged[cid] = r
+        else:
+            prev = merged[cid]
+            merged[cid] = RetrieveResult(
+                chunk=prev.chunk,
+                score=max(prev.score, r.score),
+                bm25=max(prev.bm25 or 0.0, r.bm25 or 0.0)
+                if (prev.bm25 is not None or r.bm25 is not None)
+                else None,
+                dense=max(prev.dense or 0.0, r.dense or 0.0)
+                if (prev.dense is not None or r.dense is not None)
+                else None,
+            )
+    combined = list(merged.values())
+
     combined.sort(key=lambda r: r.score, reverse=True)
     diag = {
         "bm25_rank": bm25_rank,
@@ -132,9 +198,9 @@ async def hybrid_search(request: RetrieveRequest) -> RetrieveResponse:
         "top_k": request.top_k,
         "dense_backend": "faiss" if used_faiss else "in_memory",
         "union_size": len(union_ids),
+        "filtered": bool(getattr(request, "filters", None)),
     }
     resp = RetrieveResponse(hits=combined[: request.top_k], diagnostics=diag)
-    # Emit structured event
     log_event(
         "Retrieval",
         payload={
@@ -143,6 +209,7 @@ async def hybrid_search(request: RetrieveRequest) -> RetrieveResponse:
             "scores": [h.score for h in resp.hits],
             "union_size": len(union_ids),
             "dense_backend": diag["dense_backend"],
+            "filtered": diag["filtered"],
         },
         correlation_id=getattr(request, "correlation_id", None),
     )
