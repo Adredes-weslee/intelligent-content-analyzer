@@ -12,13 +12,85 @@ requests to the other services.
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 from fastapi import FastAPI
 
-from .routers import upload, qa, summary
+from shared.tracing import install_fastapi_tracing
+
+from .routers import qa, summary, upload
+
+try:
+    from services.retrieval.app.faiss_store import (
+        _DOC_MAP_PATH as _RETRIEVAL_DOC_MAP,
+    )
+    from services.retrieval.app.faiss_store import (
+        get_index_dim as _retrieval_get_dim,
+    )
+    from services.retrieval.app.faiss_store import (
+        get_index_dim as _retrievel_get_dim,  # noqa: F401 (spelling kept stable)
+    )
+    from services.retrieval.app.faiss_store import (
+        init_index as _retrieval_init_index,
+    )
+    from services.retrieval.app.main import INDEX as RETRIEVAL_INDEX
+    from services.retrieval.app.main import _load_chunks_from_store as _retrieval_load
+except Exception:
+    _retrieval_load = None
+    RETRIEVAL_INDEX = None
+    _retrieval_init_index = None
+    _retrieval_get_dim = None
+    _RETRIEVAL_DOC_MAP = None
+
 
 app = FastAPI(title="API Gateway", version="0.1.0")
+install_fastapi_tracing(app, service_name="api-gateway")
 
 # Include routers
 app.include_router(upload.router, prefix="", tags=["upload"])
 app.include_router(qa.router, prefix="", tags=["qa"])
 app.include_router(summary.router, prefix="", tags=["summary"])
+
+
+@app.on_event("startup")
+def _bootstrap_retrieval_inproc() -> None:
+    # If retrieval service isn’t running, load its state so in‑proc calls work
+    if _retrieval_load and _retrieval_init_index and _retrieval_get_dim:
+        try:
+            _retrieval_init_index(dim=_retrieval_get_dim())
+        except Exception:
+            pass
+        try:
+            _retrieval_load()
+        except Exception:
+            pass
+
+
+# Optional: quick debug to confirm it loaded
+@app.get("/_retrieval_status")
+def _retrieval_status():
+    abs_path = str(Path(_RETRIEVAL_DOC_MAP).resolve()) if _RETRIEVAL_DOC_MAP else None
+    chunk_count = None
+    if _RETRIEVAL_DOC_MAP and Path(_RETRIEVAL_DOC_MAP).exists():
+        try:
+            m = json.load(open(_RETRIEVAL_DOC_MAP, encoding="utf-8"))
+            chunk_count = len(m.get("chunks", {}))
+        except Exception:
+            chunk_count = -1
+    # fetch live length from retrieval module to avoid stale alias
+    try:
+        import services.retrieval.app.main as _ret
+
+        indexed_len = len(_ret.INDEX)
+    except Exception:
+        indexed_len = len(RETRIEVAL_INDEX) if RETRIEVAL_INDEX is not None else None
+    return {
+        "indexed": indexed_len,
+        "doc_map_path": _RETRIEVAL_DOC_MAP,
+        "doc_map_path_abs": abs_path,
+        "doc_map_exists": (
+            Path(_RETRIEVAL_DOC_MAP).exists() if _RETRIEVAL_DOC_MAP else None
+        ),
+        "doc_map_chunks": chunk_count,
+    }
