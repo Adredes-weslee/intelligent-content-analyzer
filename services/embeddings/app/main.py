@@ -26,7 +26,7 @@ install_fastapi_tracing(app, service_name="embeddings")
 
 @app.get("/")
 def _root():
-    return {"status": "ok", "service": "api-gateway"}
+    return {"status": "ok", "service": "embeddings"}
 
 
 @app.get("/health")
