@@ -394,13 +394,14 @@ sequenceDiagram
   - Gemini chosen for strong multilingual support and reasoning; offline mode keeps dev/testing deterministic.
 
 - **Limitations**:
-  - Performance (CPU-only): ingesting large PDFs, computing embeddings, and generating answers are not very fast on CPU. First-run cold starts (model load, FAISS build) add extra latency.
-  - Render hosting constraints: free-tier cold starts and request time limits can lead to timeouts on long ingest/generation calls. Expect occasional 502/timeout responses under load.
+  - Local CPU-bound steps: parsing large PDFs, chunking, and FAISS index build/search run on the container CPU and can be slow on small instances. First-run cold starts (index/model init) add extra latency.
+  - External API latency: embeddings and generation use Google APIs; end-to-end latency depends on network and provider response times and any rate limits.
+  - Reranker on CPU: the cross-encoder reranker runs on Render containers (CPU), which adds noticeable latency; a GPU-backed path would improve it.
+  - Render hosting constraints: free-tier cold starts and request time limits can cause timeouts on long ingest/generation calls. Expect occasional 502/timeout responses under load.
     - Mitigations: keep-alive pings, background ingest, microservices with independent scaling, client-side timeouts/retries.
-  - Deterministic test mode: OFFLINE_MODE with deterministic embeddings trades accuracy for reproducibility; online mode yields higher quality but adds vendor latency/cost.
-  - Reranker quality/latency: cross-encoder reranking runs on CPU; quality and latency would improve with GPU or distilled/ONNX models.
+  - Deterministic test mode: OFFLINE_MODE trades some accuracy for reproducibility; online mode improves quality but adds vendor latency/cost.
   - Index persistence: FAISS index and doc_map live under data/. On ephemeral disks they reset on redeploy unless a persistent volume is configured.
-  - Multilingual edge cases: retrieval works across languages, but best performance occurs when the query language matches the document language; OCR for scanned PDFs is limited.
+  - Multilingual edge cases: best results when query language matches document language; OCR for scanned PDFs is limited.
   - Observability: Langfuse tracing is partially integrated; span coverage and dashboards are incomplete.
   - Security/ops: minimal auth, basic rate limiting, no per-tenant quotas, limited SLO alerting.
 
