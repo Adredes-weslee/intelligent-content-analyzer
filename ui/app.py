@@ -40,7 +40,7 @@ _retry = Retry(
     read=2,
     status=2,
     backoff_factor=0.5,
-    status_forcelist=(500, 502, 503, 504),
+    status_forcelist=(502, 503, 504),  # don't retry 500
     allowed_methods=frozenset(["GET", "POST"]),
 )
 _adapter = HTTPAdapter(max_retries=_retry, pool_connections=10, pool_maxsize=10)
@@ -88,7 +88,7 @@ restrict_to_last_doc = st.sidebar.checkbox(
     "Restrict questions to last uploaded doc",
     key="restrict_last_doc",
     value=st.session_state["restrict_last_doc"],
-    help="Only search chunks from the most recently uploaded document. Disables cross‑document retrieval.",
+    help="Only search chunks from the most recently uploaded document. Disables cross-document retrieval.",
 )
 show_raw = st.sidebar.checkbox(
     "Show raw JSON (debug)",
@@ -366,7 +366,7 @@ with st.form("qa_form", clear_on_submit=False):
             "Use Reranker",
             value=bool(st.session_state.get("use_rerank", True)),
             key="use_rerank",
-            help="Apply a cross‑encoder to reorder fused candidates. Improves accuracy, adds latency.",
+            help="Apply a cross-encoder to reorder fused candidates. Improves accuracy, adds latency.",
         )
     with col_q4:
         use_judge = st.checkbox(

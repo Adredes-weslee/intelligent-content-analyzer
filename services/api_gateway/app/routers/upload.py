@@ -1,7 +1,7 @@
 """Upload router for the API gateway.
 
 Parses a minimal multipart/form-data request body to extract a single file
-without requiring python-multipart. In local/dev (in‑proc) mode, the file bytes
+without requiring python-multipart. In local/dev (in-proc) mode, the file bytes
 are parsed and chunked locally and indexed into the in-memory retrieval index.
 In cloud/HTTP mode, the gateway calls the ingest and retrieval microservices.
 
@@ -55,8 +55,8 @@ def _sanitize_chunk(d: dict) -> dict:
     meta = d.get("meta") or {}
     clean_meta = {k: meta.get(k) for k in _ALLOWED_META if k in meta}
     return {
-        "id": str(d.get("id")),
-        "doc_id": str(d.get("doc_id")),
+        "id": str(d.get("id")) if d.get("id") is not None else None,
+        "doc_id": str(d.get("doc_id")) if d.get("doc_id") is not None else None,
         "text": d.get("text") or "",
         "meta": clean_meta,
     }
@@ -82,7 +82,7 @@ async def _read_ingest_payload(resp: httpx.Response) -> list[dict]:
     return chunks
 
 
-# Initialize FAISS index only in local/in‑proc mode.
+# Initialize FAISS index only in local/in-proc mode.
 if not USE_HTTP:
     try:
         init_faiss_index()
@@ -109,7 +109,7 @@ if not USE_HTTP:
 async def upload_document(request: Request) -> JSONResponse:
     """Upload a document and return its generated ID.
 
-    Local/dev (in‑proc):
+    Local/dev (in-proc):
       - Parse and chunk in process, then index locally.
     Cloud/HTTP (Render):
       - Send file to ingest service to parse+chunk, then post chunks to retrieval.
@@ -183,11 +183,19 @@ async def upload_document(request: Request) -> JSONResponse:
                 except Exception:
                     doc_id = None
 
+                # Sanitize, then **normalize doc_id and chunk ids** before indexing
                 safe_chunks = [_sanitize_chunk(c) for c in raw_chunks]
                 if not doc_id and safe_chunks:
                     doc_id = safe_chunks[0].get("doc_id") or str(uuid.uuid4())
                 if not doc_id:
                     doc_id = str(uuid.uuid4())
+
+                # 🔧 Ensure the doc_id we return is exactly what we index,
+                # and each chunk has a stable id.
+                for i, c in enumerate(safe_chunks):
+                    c["doc_id"] = doc_id
+                    if not c.get("id"):
+                        c["id"] = f"{doc_id}_{i}"
 
                 # 2) Retrieval: index chunks (raw list, not {"chunks": [...]})
                 idx = await client.post(f"{RETRIEVAL_URL}/index", json=safe_chunks)
@@ -208,7 +216,7 @@ async def upload_document(request: Request) -> JSONResponse:
         except Exception as e:
             raise HTTPException(status_code=502, detail=f"Ingest/Index failed: {e}")
 
-    # Local/in‑proc mode: use internal readers/chunkers/indexers
+    # Local/in-proc mode: use internal readers/chunkers/indexers
     existing_doc = None
     try:
         existing_doc = lookup_by_checksum(checksum)

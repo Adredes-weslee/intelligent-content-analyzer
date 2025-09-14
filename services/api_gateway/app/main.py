@@ -28,8 +28,9 @@ from shared.settings import Settings
 from shared.tracing import install_fastapi_tracing
 
 from .routers import qa, summary, upload
+from .routers.debug import router as debug_router  # NEW
 
-# Optional in‑proc retrieval imports (used only in local/dev mode)
+# Optional in-proc retrieval imports (used only in local/dev mode)
 try:
     from services.retrieval.app.faiss_store import (
         _DOC_MAP_PATH as _RETRIEVAL_DOC_MAP,
@@ -63,31 +64,39 @@ def _health():
     return {"status": "ok"}
 
 
-# CORS
-allowed = [
-    os.getenv(
-        "STREAMLIT_APP_ORIGIN",
+# -------- CORS (allow Streamlit origin) --------
+s = Settings()
+origin_env = (
+    os.getenv("STREAMLIT_APP_ORIGIN") or getattr(s, "streamlit_app_origin", "") or ""
+)
+# Support comma-separated list if multiple origins are provided
+origins = [o.strip().rstrip("/") for o in origin_env.split(",") if o.strip()]
+
+# Fallback to your previous explicit defaults if nothing configured
+if not origins:
+    origins = [
         "https://adredes-weslee-intelligent-content-analyzer-uiapp-stwg9a.streamlit.app",
-    ),
-    "http://localhost:8501",
-]
-allowed = [o.rstrip("/") for o in allowed if o]
+        "http://localhost:8501",
+    ]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=allowed,
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# ----------------------------------------------
+
 
 # Routers
 app.include_router(upload.router, prefix="", tags=["upload"])
 app.include_router(qa.router, prefix="", tags=["qa"])
 app.include_router(summary.router, prefix="", tags=["summary"])
+app.include_router(debug_router)  # NEW
 
-# Determine mode: HTTP microservices vs local in‑proc
-s = Settings()
+
+# Determine mode: HTTP microservices vs local in-proc
 USE_HTTP = any(
     [
         (os.getenv("INGEST_URL") or s.ingest_url),
@@ -128,7 +137,7 @@ def _retrieval_status():
         except Exception as e:
             return {"error": str(e)}
 
-    # Local/dev mode: inspect in‑proc retrieval state/files.
+    # Local/dev mode: inspect in-proc retrieval state/files.
     abs_path = str(Path(_RETRIEVAL_DOC_MAP).resolve()) if _RETRIEVAL_DOC_MAP else None
     chunk_count = None
     if _RETRIEVAL_DOC_MAP and Path(_RETRIEVAL_DOC_MAP).exists():

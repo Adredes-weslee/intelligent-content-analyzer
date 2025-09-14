@@ -28,7 +28,8 @@ from __future__ import annotations
 import json
 from typing import List
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 
 from shared.models import (
     Citation,
@@ -45,6 +46,19 @@ from .prompts import GENERATOR_SYSTEM_PROMPT, ROUTER_PROMPT, SUMMARIZER_SYSTEM_P
 
 app = FastAPI(title="LLM Generation Service", version="0.2.2")
 install_fastapi_tracing(app, service_name="llm-generate")
+
+
+# ---------- Global safety net: never crash the worker ----------
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    """Catch-all for any unhandled exception; return structured JSON 500."""
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"An unexpected error occurred in llm-generate: {exc}"},
+    )
+
+
+# ---------------------------------------------------------------
 
 
 @app.get("/")
