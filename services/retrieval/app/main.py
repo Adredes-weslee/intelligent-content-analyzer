@@ -34,7 +34,7 @@ from pathlib import Path
 from typing import Dict, List
 
 import httpx
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 
 from services.embeddings.app.embeddings import embed_texts
 from shared.models import (
@@ -133,17 +133,20 @@ def status():
 
 
 @app.get("/chunks_by_doc")
-def chunks_by_doc(doc_id: str, max_chunks: int | None = None) -> dict:
-    """Return chunks for a given doc_id (used by summarization)."""
-    limit = max_chunks or 50
-    items = [c for c in INDEX if getattr(c, "doc_id", None) == doc_id][:limit]
+def chunks_by_doc(
+    doc_id: str, max_chunks: int | None = None, limit: int | None = None
+) -> dict:
+    """Return up to `max_chunks` chunks for the given doc_id (compat: 'limit')."""
     try:
-        chunks = [c.dict() for c in items]
-    except Exception:
-        chunks = [
-            c if isinstance(c, dict) else getattr(c, "__dict__", {}) for c in items
-        ]
-    return {"chunks": chunks}
+        items: List[DocChunk] = [
+            c for c in INDEX if getattr(c, "doc_id", None) == doc_id
+        ]  # type: ignore[name-defined]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"storage error: {e}")
+    n = max_chunks if max_chunks is not None else (limit if limit is not None else 50)
+    if not items:
+        return {"chunks": []}
+    return {"chunks": [c.dict() for c in items[: max(1, int(n))]]}
 
 
 def _l2_norm(v: List[float]) -> float:
