@@ -18,7 +18,9 @@ async def _probe(url: str) -> Dict[str, str]:
         return {"status": "unconfigured"}
     try:
         u = url.rstrip("/") + "/health"
-        async with httpx.AsyncClient(timeout=httpx.Timeout(connect=5, read=5)) as c:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(connect=5.0, read=5.0, write=5.0, pool=5.0)
+        ) as c:
             r = await c.get(u)
             return {"status": str(r.status_code), "body": (r.text[:200] or "")}
     except Exception as e:

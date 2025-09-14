@@ -66,7 +66,7 @@ def _embed_texts_http(
     if dim is not None:
         payload["dim"] = dim
     with httpx.Client(
-        timeout=httpx.Timeout(connect=5, read=60, write=10, pool=5)
+        timeout=httpx.Timeout(connect=10.0, read=60.0, write=60.0, pool=10.0)
     ) as client:
         r = client.post(f"{_EMBED_URL}/embed", json=payload)
         r.raise_for_status()

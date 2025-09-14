@@ -44,7 +44,7 @@ async def _fetch_chunks_http(doc_id: str, max_chunks: int) -> list[dict]:
     params = {"doc_id": doc_id, "max_chunks": max_chunks}
     try:
         async with httpx.AsyncClient(
-            timeout=httpx.Timeout(connect=10, read=60, write=60)
+            timeout=httpx.Timeout(connect=30, read=180, write=180, pool=10)
         ) as client:
             r = await client.get(f"{RETRIEVAL_URL}/chunks_by_doc", params=params)
             r.raise_for_status()
@@ -72,7 +72,7 @@ async def _summarize_http(req: SummarizeRequest) -> SummarizeResponse:
         raise HTTPException(500, "LLM_GENERATE_URL not configured")
     try:
         async with httpx.AsyncClient(
-            timeout=httpx.Timeout(connect=10, read=180, write=180)
+            timeout=httpx.Timeout(connect=30, read=180, write=180, pool=10)
         ) as client:
             r = await client.post(
                 f"{LLM_GENERATE_URL}/summarize", json=req.model_dump()

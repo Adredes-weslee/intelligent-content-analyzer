@@ -65,7 +65,9 @@ _USE_HTTP = bool(RETRIEVAL_URL and LLM_GENERATE_URL and EVALUATION_URL)
 
 
 async def _post_json(url: str, payload: dict) -> dict:
-    async with httpx.AsyncClient(timeout=httpx.Timeout(10, read=180)) as client:
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(connect=30, read=180, write=180, pool=10)
+    ) as client:
         r = await client.post(url, json=payload)
         r.raise_for_status()
         return r.json()
