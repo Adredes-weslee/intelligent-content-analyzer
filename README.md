@@ -388,6 +388,22 @@ sequenceDiagram
 - **Debugging in production**:
   - Observability via tracing (Langfuse not fully implemented), debug endpoints (/status, /chunks_by_doc, /debug/storage, /debug/upstreams).
   - Reproduction: enable OFFLINE_MODE in staging, record the exact query/doc_id and index fingerprint, then run the pytest suite (or targeted tests) to reproduce and debug deterministically.
+
+- **What works well**:
+  - Hybrid retrieval balances precision/recall; FAISS enables efficient dense search; reranking improves ordering.
+  - Gemini chosen for strong multilingual support and reasoning; offline mode keeps dev/testing deterministic.
+
+- **Limitations**:
+  - Performance (CPU-only): ingesting large PDFs, computing embeddings, and generating answers are not very fast on CPU. First-run cold starts (model load, FAISS build) add extra latency.
+  - Render hosting constraints: free-tier cold starts and request time limits can lead to timeouts on long ingest/generation calls. Expect occasional 502/timeout responses under load.
+    - Mitigations: keep-alive pings, background ingest, microservices with independent scaling, client-side timeouts/retries.
+  - Deterministic test mode: OFFLINE_MODE with deterministic embeddings trades accuracy for reproducibility; online mode yields higher quality but adds vendor latency/cost.
+  - Reranker quality/latency: cross-encoder reranking runs on CPU; quality and latency would improve with GPU or distilled/ONNX models.
+  - Index persistence: FAISS index and doc_map live under data/. On ephemeral disks they reset on redeploy unless a persistent volume is configured.
+  - Multilingual edge cases: retrieval works across languages, but best performance occurs when the query language matches the document language; OCR for scanned PDFs is limited.
+  - Observability: Langfuse tracing is partially integrated; span coverage and dashboards are incomplete.
+  - Security/ops: minimal auth, basic rate limiting, no per-tenant quotas, limited SLO alerting.
+
 - **Next improvements**:
   - Integration tests: add end-to-end API tests that spin up the API Gateway in-proc with seeded documents, then exercise POST /upload_document → POST /ask_question → GET /document_summary. Include contract tests for each router using FastAPI TestClient and a “microservices mode” variant that hits services via HTTP (docker-compose). Make tests hermetic by seeding a temporary FAISS index and setting OFFLINE_MODE=1 to avoid external variance.
   - Config management with Hydra: introduce conf/ with defaults.yaml and per-environment overrides (local.yaml, render.yaml). Keep shared/settings.py as a thin adapter that loads Hydra config and exposes typed Settings for existing imports. Benefits: config composition, structured overrides, experiment configs, and consistent CLI overrides (e.g., python -m ... + hydra.run.dir).
