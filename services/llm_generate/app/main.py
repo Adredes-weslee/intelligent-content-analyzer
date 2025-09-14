@@ -43,7 +43,7 @@ from shared.tracing import estimate_tokens, install_fastapi_tracing, log_event, 
 
 from .prompts import GENERATOR_SYSTEM_PROMPT, ROUTER_PROMPT, SUMMARIZER_SYSTEM_PROMPT
 
-app = FastAPI(title="LLM Generation Service", version="0.2.1")
+app = FastAPI(title="LLM Generation Service", version="0.2.2")
 install_fastapi_tracing(app, service_name="llm-generate")
 
 
@@ -61,6 +61,7 @@ s = Settings()
 
 _GEMINI_API_KEY = s.gemini_api_key
 
+# google-generativeai is imported/configured only when online mode and key present
 genai = None
 if _GEMINI_API_KEY and not s.offline_mode:
     try:
@@ -85,7 +86,10 @@ def _route_model(question: str) -> dict:
         start, end = text.find("{"), text.rfind("}")
         data = {}
         if start != -1 and end != -1:
-            data = json.loads(text[start : end + 1])
+            try:
+                data = json.loads(text[start : end + 1])
+            except Exception:
+                data = {}
         tier = (data.get("tier") or "fast").strip().lower()
         why = data.get("why") or ""
         model = s.gemini_reasoning_model if tier == "reasoning" else s.gemini_fast_model
@@ -109,6 +113,16 @@ def _map_bracket_citations(answer_text: str) -> List[int]:
     return list(dict.fromkeys(idxs))
 
 
+def _json_generation_config():
+    if genai is None:
+        return None
+    try:
+        # Ask Gemini to return JSON only
+        return genai.GenerationConfig(response_mime_type="application/json")
+    except Exception:
+        return None
+
+
 @app.post("/generate", response_model=QAResponse)
 async def generate_answer(request: GenerateRequest | QARequest) -> QAResponse:
     """Generate an answer using Gemini, grounded in provided context.
@@ -129,6 +143,7 @@ async def generate_answer(request: GenerateRequest | QARequest) -> QAResponse:
             diagnostics={"reason": "no_context"},
         )
 
+    # Build a compact, citation-friendly context string
     context_str = None
     try:
         context_str = "\n\n".join(
@@ -171,7 +186,6 @@ async def generate_answer(request: GenerateRequest | QARequest) -> QAResponse:
             diagnostics={"reason": "no_provider"},
         )
 
-    system = GENERATOR_SYSTEM_PROMPT
     q = getattr(request, "question", "")
     if context_str:
         user_prompt = (
@@ -185,7 +199,9 @@ async def generate_answer(request: GenerateRequest | QARequest) -> QAResponse:
     chosen_model = route.get("model") or s.gemini_fast_model
     try:
         model = genai.GenerativeModel(
-            chosen_model, system_instruction=GENERATOR_SYSTEM_PROMPT
+            chosen_model,
+            system_instruction=GENERATOR_SYSTEM_PROMPT,
+            generation_config=_json_generation_config(),
         )
         corr = getattr(request, "correlation_id", None)
         with span(
@@ -195,76 +211,81 @@ async def generate_answer(request: GenerateRequest | QARequest) -> QAResponse:
             corr=corr,
         ):
             resp = model.generate_content(user_prompt)
+
         text = resp.text if hasattr(resp, "text") else None
+        payload = {}
         if text:
-            start = text.find("{")
-            end = text.rfind("}")
-            payload = (
-                json.loads(text[start : end + 1]) if start != -1 and end != -1 else {}
-            )
-            answer = payload.get("answer") or text
-            raw_citations = payload.get("citations") or []
-            citations: List[Citation] = []
-            for c in raw_citations:
-                try:
+            # Prefer strict JSON parse; fall back to brace slicing
+            try:
+                payload = json.loads(text)
+            except Exception:
+                start = text.find("{")
+                end = text.rfind("}")
+                if start != -1 and end != -1:
+                    try:
+                        payload = json.loads(text[start : end + 1])
+                    except Exception:
+                        payload = {}
+        answer = payload.get("answer") or (text or "")
+        raw_citations = payload.get("citations") or []
+        citations: List[Citation] = []
+        for c in raw_citations:
+            try:
+                citations.append(
+                    Citation(
+                        doc_id=str(c.get("doc_id")),
+                        page=c.get("page"),
+                        section=c.get("section"),
+                    )
+                )
+            except Exception:
+                continue
+
+        # Heuristic fallback for missing citations
+        if not citations:
+            ctx_chunks = context_chunks
+            idxs = _map_bracket_citations(answer)
+            for i in idxs:
+                if 0 <= i < len(ctx_chunks):
+                    cc = ctx_chunks[i]
                     citations.append(
                         Citation(
-                            doc_id=str(c.get("doc_id")),
-                            page=c.get("page"),
-                            section=c.get("section"),
+                            doc_id=getattr(cc, "doc_id", ""),
+                            page=getattr(getattr(cc, "meta", None), "page", None),
+                            section=getattr(getattr(cc, "meta", None), "section", None),
                         )
                     )
-                except Exception:
-                    continue
-
-            if not citations:
-                ctx_chunks = context_chunks
-                idxs = _map_bracket_citations(answer)
-                for i in idxs:
-                    if 0 <= i < len(ctx_chunks):
-                        cc = ctx_chunks[i]
-                        citations.append(
-                            Citation(
-                                doc_id=getattr(cc, "doc_id", ""),
-                                page=getattr(getattr(cc, "meta", None), "page", None),
-                                section=getattr(
-                                    getattr(cc, "meta", None), "section", None
-                                ),
-                            )
+            if not citations and ctx_chunks:
+                for cc in ctx_chunks[:2]:
+                    citations.append(
+                        Citation(
+                            doc_id=getattr(cc, "doc_id", ""),
+                            page=getattr(getattr(cc, "meta", None), "page", None),
+                            section=getattr(getattr(cc, "meta", None), "section", None),
                         )
-                if not citations and ctx_chunks:
-                    for cc in ctx_chunks[:2]:
-                        citations.append(
-                            Citation(
-                                doc_id=getattr(cc, "doc_id", ""),
-                                page=getattr(getattr(cc, "meta", None), "page", None),
-                                section=getattr(
-                                    getattr(cc, "meta", None), "section", None
-                                ),
-                            )
-                        )
+                    )
 
-            out = QAResponse(
-                answer=answer,
-                citations=citations,
-                confidence=0.0,
-                diagnostics={
-                    "provider": "gemini",
-                    "model": chosen_model,
-                    "router": {"tier": route.get("tier"), "why": route.get("why")},
-                },
-            )
-            log_event(
-                "Generation",
-                payload={
-                    "type": "qa",
-                    "model": chosen_model,
-                    "prompt_tokens": estimate_tokens(user_prompt),
-                    "output_tokens": estimate_tokens(answer or text),
-                },
-                correlation_id=corr,
-            )
-            return out
+        out = QAResponse(
+            answer=answer,
+            citations=citations,
+            confidence=0.0,
+            diagnostics={
+                "provider": "gemini",
+                "model": chosen_model,
+                "router": {"tier": route.get("tier"), "why": route.get("why")},
+            },
+        )
+        log_event(
+            "Generation",
+            payload={
+                "type": "qa",
+                "model": chosen_model,
+                "prompt_tokens": estimate_tokens(user_prompt),
+                "output_tokens": estimate_tokens(answer or text or ""),
+            },
+            correlation_id=corr,
+        )
+        return out
     except Exception as e:
         return QAResponse(
             answer="[fallback] Generation error.",
@@ -318,6 +339,7 @@ async def summarize_document(request: SummarizeRequest) -> SummarizeResponse:
             diagnostics={"mode": "offline" if s.offline_mode else "no_provider"},
         )
 
+    # Build a compact context string
     try:
         context_str = "\n\n".join(
             [
@@ -333,7 +355,9 @@ async def summarize_document(request: SummarizeRequest) -> SummarizeResponse:
 
     try:
         model = genai.GenerativeModel(
-            s.gemini_fast_model, system_instruction=SUMMARIZER_SYSTEM_PROMPT
+            s.gemini_fast_model,
+            system_instruction=SUMMARIZER_SYSTEM_PROMPT,
+            generation_config=_json_generation_config(),
         )
         user_prompt = (
             "Summarize the following chunks. "
@@ -342,39 +366,48 @@ async def summarize_document(request: SummarizeRequest) -> SummarizeResponse:
         )
         resp = model.generate_content(user_prompt)
         text = resp.text if hasattr(resp, "text") else None
+
+        payload = {}
         if text:
-            start = text.find("{")
-            end = text.rfind("}")
+            # Prefer strict JSON parse; fall back to brace slicing
             try:
-                payload = (
-                    json.loads(text[start : end + 1])
-                    if start != -1 and end != -1
-                    else {}
+                payload = json.loads(text)
+            except Exception:
+                start = text.find("{")
+                end = text.rfind("}")
+                if start != -1 and end != -1:
+                    try:
+                        payload = json.loads(text[start : end + 1])
+                    except Exception:
+                        payload = {}
+
+        summary = (
+            payload.get("summary")
+            or (text or "")
+            or "Unable to summarize at this time."
+        )
+        key_points = payload.get("key_points") or []
+        raw_citations = payload.get("citations") or []
+        citations: List[Citation] = []
+        for c in raw_citations:
+            try:
+                citations.append(
+                    Citation(
+                        doc_id=str(c.get("doc_id")),
+                        page=c.get("page"),
+                        section=c.get("section"),
+                    )
                 )
             except Exception:
-                payload = {"summary": text, "key_points": []}
-            summary = payload.get("summary") or ""
-            key_points = payload.get("key_points") or []
-            raw_citations = payload.get("citations") or []
-            citations: List[Citation] = []
-            for c in raw_citations:
-                try:
-                    citations.append(
-                        Citation(
-                            doc_id=str(c.get("doc_id")),
-                            page=c.get("page"),
-                            section=c.get("section"),
-                        )
-                    )
-                except Exception:
-                    continue
-            return SummarizeResponse(
-                doc_id=request.doc_id,
-                summary=summary,
-                key_points=key_points if isinstance(key_points, list) else [],
-                citations=citations,
-                diagnostics={"provider": "gemini", "model": s.gemini_fast_model},
-            )
+                continue
+
+        return SummarizeResponse(
+            doc_id=request.doc_id,
+            summary=summary,
+            key_points=key_points if isinstance(key_points, list) else [],
+            citations=citations,
+            diagnostics={"provider": "gemini", "model": s.gemini_fast_model},
+        )
     except Exception as e:
         return SummarizeResponse(
             doc_id=request.doc_id,
