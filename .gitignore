@@ -1,5 +1,10 @@
-# Ignore all files in the data directory
+# Ignore all files in the data directory, except documents
 data/*
+!data/.gitkeep
+!data/documents/
+!data/documents/**
+
+# Ignore all files in the models directory
 models/*
 
 # Environment files (but keep the template)
