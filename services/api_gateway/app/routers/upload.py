@@ -2,7 +2,7 @@
 
 Parses a minimal multipart/form-data request body to extract a single file
 without requiring python-multipart. In local/dev (in‑proc) mode, the file bytes
-are parsed and chunked locally and indexed into the in‑memory retrieval index.
+are parsed and chunked locally and indexed into the in-memory retrieval index.
 In cloud/HTTP mode, the gateway calls the ingest and retrieval microservices.
 
 This router is stateless and returns a generated doc_id and chunk count.
@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import datetime
 import hashlib
+import json
 import mimetypes
 import os
 import uuid
@@ -46,6 +47,40 @@ RETRIEVAL_URL = (os.getenv("RETRIEVAL_URL") or _settings.retrieval_url or "").rs
     "/"
 )
 USE_HTTP = bool(INGEST_URL and RETRIEVAL_URL)
+
+_ALLOWED_META = {"source", "page", "section", "lang"}
+
+
+def _sanitize_chunk(d: dict) -> dict:
+    meta = d.get("meta") or {}
+    clean_meta = {k: meta.get(k) for k in _ALLOWED_META if k in meta}
+    return {
+        "id": str(d.get("id")),
+        "doc_id": str(d.get("doc_id")),
+        "text": d.get("text") or "",
+        "meta": clean_meta,
+    }
+
+
+async def _read_ingest_payload(resp: httpx.Response) -> list[dict]:
+    ctype = resp.headers.get("content-type", "")
+    chunks: list[dict] = []
+    if "ndjson" in ctype:
+        text = resp.text
+        for line in text.splitlines():
+            if not line.strip():
+                continue
+            obj = json.loads(line)
+            chunks.append(obj.get("chunk", obj))
+    else:
+        data = resp.json()
+        chunks = (
+            data.get("chunks")
+            if isinstance(data, dict)
+            else (data if isinstance(data, list) else [])
+        )
+    return chunks
+
 
 # Initialize FAISS index only in local/in‑proc mode.
 if not USE_HTTP:
@@ -133,22 +168,43 @@ async def upload_document(request: Request) -> JSONResponse:
                 # 1) Ingest: parse + chunk
                 ing = await client.post(f"{INGEST_URL}/ingest", files=files)
                 ing.raise_for_status()
-                payload = ing.json()
-                doc_id = payload.get("doc_id") or str(uuid.uuid4())
-                chunks = payload.get("chunks") or []
+                raw_chunks = await _read_ingest_payload(ing)
+                if not raw_chunks:
+                    return JSONResponse(
+                        {"detail": "Ingest returned no chunks"}, status_code=502
+                    )
 
-                # 2) Retrieval: index chunks
-                idx = await client.post(
-                    f"{RETRIEVAL_URL}/index", json={"chunks": chunks}
-                )
-                idx.raise_for_status()
+                # Try to read doc_id from payload; fallback to first chunk or uuid
+                doc_id = None
+                try:
+                    payload = ing.json()
+                    if isinstance(payload, dict):
+                        doc_id = payload.get("doc_id")
+                except Exception:
+                    doc_id = None
+
+                safe_chunks = [_sanitize_chunk(c) for c in raw_chunks]
+                if not doc_id and safe_chunks:
+                    doc_id = safe_chunks[0].get("doc_id") or str(uuid.uuid4())
+                if not doc_id:
+                    doc_id = str(uuid.uuid4())
+
+                # 2) Retrieval: index chunks (raw list, not {"chunks": [...]})
+                idx = await client.post(f"{RETRIEVAL_URL}/index", json=safe_chunks)
+                try:
+                    idx.raise_for_status()
+                except httpx.HTTPStatusError as e:
+                    return JSONResponse(
+                        {"detail": f"Ingest/Index failed: {e}. Body: {idx.text}"},
+                        status_code=502,
+                    )
 
             try:
                 bump_index_version()
             except Exception:
                 pass
 
-            return JSONResponse({"doc_id": doc_id, "num_chunks": len(chunks)})
+            return JSONResponse({"doc_id": doc_id, "num_chunks": len(safe_chunks)})
         except Exception as e:
             raise HTTPException(status_code=502, detail=f"Ingest/Index failed: {e}")
 
