@@ -1,6 +1,9 @@
-# Intelligent Content Analyzer — Architecture
+# Intelligent Content Analyzer 
 
-This document explains the system architecture, data flow, and how the repository maps to the running services. It uses a C4 model to move from a high-level overview to detailed components.
+A mini project that analyzes educational documents and provides intelligent insights to help students understand complex topics. It supports multilingual content and answers in the same language as the query.
+
+- Live API: https://adredes-weslee-intelligent-content-analyzer-uiapp-stwg9a.streamlit.app/
+- OpenAPI docs: /docs on the API Gateway: https://api-gateway-zzhe.onrender.com/docs
 
 - Source of truth for app wiring:
   - API Gateway: [services/api_gateway/app/main.py](services/api_gateway/app/main.py)
@@ -17,32 +20,86 @@ This document explains the system architecture, data flow, and how the repositor
   - Orchestration: [infra/docker-compose.yml](infra/docker-compose.yml), env: [.env.example](.env.example)
   - UI: [ui/app.py](ui/app.py)
 
-Notes
+**Notes**
 - Dual run modes:
   - Local single-process: API Gateway imports other services in-proc (no servers).
   - HTTP microservices: When upstream URLs are set, API Gateway calls services over HTTP:
     - INGEST_URL, RETRIEVAL_URL, LLM_GENERATE_URL, EVALUATION_URL
 - Retrieval exposes status/debug endpoints used in ops: [`/status`](services/retrieval/app/main.py), [`/chunks_by_doc`](services/retrieval/app/main.py), [`/debug/storage`](services/retrieval/app/main.py).
 
+**Sample data**
+- Location: [data/documents/](data/documents/)
+  - [merge_sort.md](data/documents/merge_sort.md)
+  - [MIT OCW - 6.006 Introduction to Algorithms Lecture Notes.pdf](data/documents/MIT%20OCW%20-%206.006%20Introduction%20to%20Algorithms%20Lecture%20Notes.pdf)
+  - [README.ko-KR.md (Korean)](data/documents/README.ko-KR.md)
+- Multilingual support: The system uses multilingual-friendly embeddings and LLMs. Queries can be asked in multiple languages, and answers are returned in the same language as the query whenever possible. Performance is better if the query is in the same language as the information from the source documents.
+
 ## Repository structure
 
-- services/
-  - api_gateway/ … FastAPI, routes, orchestration (HTTP or in-proc via toggles)
-  - ingest/ … file parsing and chunking
-  - retrieval/ … BM25 + dense hybrid, FAISS, reranker
-  - embeddings/ … CPU-friendly embeddings abstraction (offline deterministic supported)
-  - llm_generate/ … Gemini-based answer/summarize, router prompt, strict JSON parsing + citation heuristics
-  - evaluation/ … heuristic metrics + optional LLM-as-judge, confidence blending
-- shared/ … models, settings, cache, tracing
-- infra/ … docker-compose and environment
-- documentation/ … this documentation
-- tests/ … unit tests
-- ui/ … Streamlit client calling only the API Gateway
+```
+intelligent-content-analyzer/
+├─ services/
+│  ├─ api_gateway/
+│  │  ├─ app/
+│  │  │  ├─ main.py
+│  │  │  └─ routers/
+│  │  │     ├─ upload.py
+│  │  │     ├─ qa.py
+│  │  │     ├─ summary.py
+│  │  │     └─ debug.py          # debug router (GET /debug/upstreams)
+│  │  └─ Dockerfile
+│  ├─ ingest/
+│  │  ├─ app/                    # main.py, readers.py, chunkers.py
+│  │  └─ Dockerfile
+│  ├─ retrieval/
+│  │  ├─ app/                    # main.py, hybrid.py, faiss_store.py, rerank.py
+│  │  └─ Dockerfile
+│  ├─ embeddings/
+│  │  ├─ app/                    # main.py, embeddings.py
+│  │  └─ Dockerfile
+│  ├─ llm_generate/
+│  │  ├─ app/                    # main.py, prompts.py
+│  │  └─ Dockerfile
+│  └─ evaluation/
+│     ├─ app/                    # main.py, metrics.py, confidence.py
+│     └─ Dockerfile
+├─ shared/
+│  ├─ settings.py
+│  ├─ models.py
+│  ├─ cache.py
+│  └─ tracing.py
+├─ ui/
+│  ├─ app.py
+│  └─ requirements.txt          # for streamlit frontend
+├─ data/
+│  └─ documents/
+│     ├─ merge_sort.md
+│     ├─ MIT OCW - 6.006 Introduction to Algorithms Lecture Notes.pdf
+│     └─ README.ko-KR.md         # Korean sample (multilingual supported; answers follow query language)
+├─ tests/
+│  ├─ conftest.py                # sets OFFLINE_MODE, EVAL_LLM_ENABLED, EMBEDDING_DIM, FAISS paths
+│  ├─ test_api_gateway.py
+│  ├─ test_chunkers.py
+│  ├─ test_embeddings.py
+│  ├─ test_evaluation.py
+│  ├─ test_ingest.py
+│  ├─ test_llm_generate.py
+│  ├─ test_readers.py
+│  └─ test_retrieval.py
+├─ infra/
+│  ├─ docker-compose.yml
+│  └─ environment.yaml           # conda environment file
+├─ requirements.txt              # for docker builds
+├─ render.yaml                   
+└─ README.md
+```
 
-## C4 — Level 1: System context
+## Architecture (C4)
+
+### System context (L1)
 
 ```mermaid
-%%{init: {"themeVariables": {"fontSize": "24px"}, "flowchart": {"htmlLabels": true}}}%%
+%%{init: {"themeVariables": {"fontSize": "24px", "lineColor": "#2ecc71"}, "flowchart": {"htmlLabels": true}}}%%
 C4Context
     title Intelligent Content Analyzer — System Context
     Person(user, "Student/User", "Uploads documents, asks questions, requests summaries")
@@ -70,10 +127,10 @@ C4Context
     Rel(api, langfuse, "Tracing spans/events")
 ```
 
-## C4 — Level 2: Containers
+### Containers (L2)
 
 ```mermaid
-%%{init: {"themeVariables": {"fontSize": "20px"}, "flowchart": {"htmlLabels": true}}}%%
+%%{init: {"themeVariables": {"fontSize": "20px", "lineColor": "#2ecc71"}, "flowchart": {"htmlLabels": true}}}%%
 C4Container
     title Intelligent Content Analyzer — Containers
     Person(user, "Student/User")
@@ -101,7 +158,7 @@ C4Container
     Rel(api, langfuse, "Spans/events")
 ```
 
-## C4 — Level 3: Components (API Gateway)
+### Components (API Gateway, L3)
 
 ```mermaid
 %%{init: {"themeVariables": {"fontSize": "20px"}, "flowchart": {"htmlLabels": true}}}%%
@@ -152,11 +209,11 @@ flowchart TB
   Retrieval -. spans/events .-> Langfuse
   LLM_Generate -. spans/events .-> Langfuse
   Evaluation -. spans/events .-> Langfuse
+
+linkStyle default color:green;
 ```
 
-## Updated data flow diagrams
-
-### End-to-end flow (upload, ask, summarize)
+### Data flow (end-to-end)
 
 ```mermaid
 %%{init: {"themeVariables": {"fontSize": "20px"}, "flowchart": {"htmlLabels": true}}}%%
@@ -207,11 +264,14 @@ flowchart LR
   ASK -. "exact/semantic lookup" .-> CACHE
   A -. "set versioned keys + semantic add" .-> CACHE
   SUM -. "summary cache (TTL)" .-> CACHE
+
+linkStyle default color:green;
 ```
 
 ### Sequence (QA happy path)
 
 ```mermaid
+%%{init: {"themeVariables": {"sequenceMessageTextColor": "green"}}}%%
 sequenceDiagram
   autonumber
   participant User
@@ -260,3 +320,99 @@ sequenceDiagram
 - Render/cloud specifics:
   - Retrieval requires persistent disk at /app/data for FAISS/doc_map; ensure EMBEDDING_DIM matches across services.
   - Gateway summary path requires both RETRIEVAL_URL and LLM_GENERATE_URL; otherwise local mode is used.
+
+
+## Technology choices and rationale
+
+Model selection analysis
+- Choice: Google Gemini for text generation and summarization; multilingual embeddings (Gemini or local offline deterministic embeddings for tests).
+- Alternatives considered:
+  - OpenAI GPT: strong quality, higher cost; less flexible offline.
+  - Llama variants: localizable, but more infra; latency on CPU.
+  - Cohere: strong rerank/embeddings; extra vendor coupling.
+- Trade-offs:
+  - Cost: Generative calls are minimized with caching, reranking, and threshold gating; retrieval provides small context windows.
+  - Accuracy: Hybrid retrieval + reranking + citations + evaluation improves groundedness.
+  - Latency: In-proc mode avoids network hops; microservices mode scales independently in cloud.
+- Requirement fit:
+  - Multilingual: embeddings and LLM handle multilingual; output follows query language.
+  - Offline/dev: OFFLINE_MODE enables deterministic paths, no external calls.
+
+Architecture decisions
+- Document processing:
+  - Readers: pdfplumber (PDF), python-docx (DOCX), python-pptx (PPTX), BeautifulSoup (HTML), markdown (MD), optional OCR hooks for images.
+  - Chunking: section-aware; respects headings/pages/tables; configurable size; normalizes tables to CSV when enabled.
+- Retrieval:
+  - Hybrid BM25 + dense vectors with RRF-style blending; FAISS persistence and doc map on disk; optional reranker (cross-encoder or heuristic).
+  - Filters and candidate limits via shared models; consistent embedding_dim across services.
+- Orchestration:
+  - API Gateway composes ingest → retrieval → LLM → evaluation. Runs in-proc locally or via HTTP with *_URL envs in cloud.
+- Caching:
+  - Redis exact/semantic caches; versioned namespace invalidated on upload; TTLs for answers and summaries.
+- Evaluation:
+  - Heuristic metrics (overlap, coverage) and optional LLM-as-judge; confidence blended to gate low-quality answers.
+
+## AI optimization strategy
+
+- Measuring quality:
+  - Metrics: context recall, answer coverage, citation density, length penalties; optional judge model.
+  - Confidence: blend retrieval scores, rerank scores, and evaluation signals.
+- Improving accuracy:
+  - Prompting: structured prompts with few-shot examples; strict JSON parsing.
+  - Retrieval tuning: candidate counts, RRF weights, rerank threshold, query translation/refinement loop when low-recall.
+  - Index hygiene: normalize tables, deduplicate chunks, language-aware chunking.
+- Handling wrong answers:
+  - Threshold gate to abstain or ask for clarification when confidence is low.
+  - Always return citations; surface uncertainty; log for analysis via tracing.
+
+## Critical analysis
+
+- Why these choices:
+  - Hybrid retrieval balances precision/recall; FAISS enables efficient dense search; reranking improves ordering.
+  - Gemini chosen for strong multilingual support and reasoning; offline mode keeps dev/testing deterministic.
+- Alternatives rejected:
+  - Dense-only (recall volatility), BM25-only (semantic misses), end-to-end RAG without rerank (hallucination risk).
+- Debugging in production:
+  - Observability via tracing (Langfuse optional), debug endpoints (/status, /chunks_by_doc, /debug/storage, /debug/upstreams).
+  - Repro: enable OFFLINE_MODE in staging; record queries/contexts; run pytest suites.
+- Next improvements:
+  - Guardrails for safety and format adherence; active learning from user feedback; domain adapters; better OCR; GPU-backed reranker.
+
+## Advanced features
+
+- Semantic vs keyword search comparison: hybrid retrieval with BM25 + dense and RRF union; inspect diagnostics to compare.
+- Response caching: exact/semantic caching with versioned namespaces and TTLs; invalidated on upload.
+- Confidence scoring: evaluation + retrieval/rerank signals produce a final confidence; threshold gates responses.
+- Feedback loop: store user thumbs-up/down and corrections (endpoint to add) to retrain reranker and prompts.
+- Multilingual support: embeddings/LLM are multilingual; respond in the query language.
+- Query expansion/refinement: optional step when recall is low; may translate or expand the query and retry retrieval.
+
+## Debugging & ops
+- Gateway upstream probe:
+  - GET https://api-gateway-zzhe.onrender.com/debug/upstreams
+  - Returns each upstream URL (from env or Settings) and the result of calling its /health.
+- Health endpoints:
+  - Each service exposes GET / (root) and/or GET /health. Retrieval also has /status, /chunks_by_doc, /debug/storage.
+
+## Testing
+
+- Recommended (Conda on Windows/macOS/Linux):
+  - Create/activate the env from infra/environment.yaml
+    ```powershell
+    conda env create -f infra\environment.yaml
+    conda activate intelligent-content-analyzer
+    ```
+    If the env already exists:
+    ```powershell
+    conda env update -f infra\environment.yaml --prune
+    conda activate intelligent-content-analyzer
+    ```
+  - Run tests:
+    ```powershell
+    python -m pytest -q
+    ```
+
+- Clear import caches after editing Settings or models:
+  ```powershell
+  Remove-Item -Recurse -Force .\shared\__pycache__\, .\services\**\__pycache__\, .\tests\__pycache__\ 2>$null
+  ```
