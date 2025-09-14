@@ -1,9 +1,12 @@
 import hashlib
 import os
+import time
 
 import pandas as pd
 import requests
 import streamlit as st
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 st.set_page_config(page_title="Intelligent Content Analyzer", layout="wide")
 
@@ -26,6 +29,23 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+
+# ---- HTTP session (avoid stale keep-alives on Render) ----
+_SESSION = requests.Session()
+_SESSION.headers.update({"User-Agent": "ica-ui/1.0"})
+# Retry on transient 5xx and connection resets
+_retry = Retry(
+    total=2,
+    connect=2,
+    read=2,
+    status=2,
+    backoff_factor=0.5,
+    status_forcelist=(500, 502, 503, 504),
+    allowed_methods=frozenset(["GET", "POST"]),
+)
+_adapter = HTTPAdapter(max_retries=_retry, pool_connections=10, pool_maxsize=10)
+_SESSION.mount("https://", _adapter)
+_SESSION.mount("http://", _adapter)
 
 # ---- Session state defaults ----
 for k, v in {
@@ -151,7 +171,14 @@ if uploaded_files and st.button("Upload", key="btn_upload"):
             continue
         files = {"file": (f.name, data_bytes)}
         try:
-            resp = requests.post(f"{API_URL}/upload_document", files=files, timeout=120)
+            with st.spinner(f"Uploading {f.name}..."):
+                resp = _SESSION.post(
+                    f"{API_URL}/upload_document",
+                    files=files,
+                    timeout=120,
+                    headers={"Connection": "close"},
+                    params={"_t": str(int(time.time()))},
+                )
             if resp.ok:
                 data = resp.json()
                 doc_id = data.get("doc_id")
@@ -167,7 +194,9 @@ if uploaded_files and st.button("Upload", key="btn_upload"):
                 st.session_state["docs"].append(entry)
                 successes += 1
             else:
-                failures.append((f.name, f"{resp.status_code} {resp.text}"))
+                failures.append((f.name, f"{resp.status_code} {resp.text[:500]}"))
+        except requests.Timeout:
+            failures.append((f.name, "Timeout"))
         except Exception as e:
             failures.append((f.name, str(e)))
 
@@ -214,7 +243,7 @@ def render_qa(data: dict) -> None:
             f"{float(evalm.get('context_relevance_ratio', 0.0)):.2f}",
         )
 
-    # 2) Citations (deduped, with snippet and filename)
+    # 2) Citations
     st.subheader("Citations")
     citations = data.get("citations") or []
     rows, seen = [], set()
@@ -311,7 +340,7 @@ def render_qa(data: dict) -> None:
             st.json(data)
 
 
-# ---- Ask question ----
+# ---- Ask a Question ----
 st.header("Ask a Question")
 with st.form("qa_form", clear_on_submit=False):
     col_q1, col_q2, col_q3, col_q4 = st.columns([3, 1, 1, 1])
@@ -362,6 +391,9 @@ with st.form("qa_form", clear_on_submit=False):
     submitted = st.form_submit_button("Ask", type="primary")
 
 if submitted:
+    # Clear previous result so UI refreshes even if call fails/hangs
+    st.session_state["qa_result"] = None
+
     payload = {
         "question": st.session_state["question"],
         "k": int(st.session_state["k"]),
@@ -375,13 +407,20 @@ if submitted:
         else:
             st.info("Restriction is on, but no document is uploaded yet.")
     try:
-        resp = requests.post(
-            f"{st.session_state['api_url']}/ask_question", json=payload, timeout=120
-        )
+        with st.spinner("Asking..."):
+            resp = _SESSION.post(
+                f"{st.session_state['api_url']}/ask_question",
+                json=payload,
+                timeout=120,
+                headers={"Connection": "close"},
+                params={"_t": str(int(time.time()))},
+            )
         if resp.ok:
             st.session_state["qa_result"] = resp.json()
         else:
-            st.error(f"QA failed: {resp.status_code} {resp.text}")
+            st.error(f"QA failed: {resp.status_code} {resp.text[:500]}")
+    except requests.Timeout:
+        st.error("Request timed out.")
     except Exception as e:
         st.error(f"Request error: {e}")
 
@@ -397,20 +436,27 @@ with col_s2:
     summarize_clicked = st.button("Summarize", key="btn_summarize")
 
 if summarize_clicked:
+    # Clear previous summary so UI refreshes
+    st.session_state["summary"] = None
+
     doc_id = st.session_state.get("doc_id")
     if not doc_id:
         st.warning("Upload a document first.")
     else:
         try:
-            resp = requests.get(
-                f"{st.session_state['api_url']}/document_summary",
-                params={"doc_id": doc_id},
-                timeout=120,
-            )
+            with st.spinner("Summarizing..."):
+                resp = _SESSION.get(
+                    f"{st.session_state['api_url']}/document_summary",
+                    params={"doc_id": doc_id, "_t": str(int(time.time()))},
+                    timeout=180,
+                    headers={"Connection": "close"},
+                )
             if resp.ok:
                 st.session_state["summary"] = resp.json().get("summary")
             else:
-                st.error(f"Summary failed: {resp.status_code} {resp.text}")
+                st.error(f"Summary failed: {resp.status_code} {resp.text[:500]}")
+        except requests.Timeout:
+            st.error("Summary request timed out.")
         except Exception as e:
             st.error(f"Summary error: {e}")
 

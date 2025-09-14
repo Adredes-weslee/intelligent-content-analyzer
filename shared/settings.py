@@ -99,7 +99,7 @@ class Settings(BaseSettings):
     query_refine_enabled: bool = Field(True, env="QUERY_REFINE_ENABLED")
 
     # Summarization and evaluation toggles
-    summarizer_max_chunks: int = Field(20, env="SUMMARIZER_MAX_CHUNKS")
+    summarizer_max_chunks: int = Field(12, env="SUMMARIZER_MAX_CHUNKS")
     eval_llm_enabled: bool = Field(True, env="EVAL_LLM_ENABLED")
 
     # Caching & performance

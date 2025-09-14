@@ -51,8 +51,13 @@ async def _summarize_http(req: SummarizeRequest) -> dict:
     async with httpx.AsyncClient(
         timeout=httpx.Timeout(connect=5, read=180, write=60)
     ) as client:
-        r = await client.post(f"{LLM_GENERATE_URL}/summarize", json=req.dict())
-        r.raise_for_status()
+        try:
+            r = await client.post(f"{LLM_GENERATE_URL}/summarize", json=req.dict())
+            r.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            # Surface upstream error body to caller
+            detail = f"LLM summarize failed: {e.response.status_code} {e.response.text}"
+            raise HTTPException(status_code=502, detail=detail)
         data = r.json()
         return {
             "summary": data.get("summary"),
@@ -81,7 +86,15 @@ async def document_summary(doc_id: str, max_chunks: int | None = None) -> dict:
                 raise HTTPException(status_code=404, detail="Document not found")
         with span("summary.llm.http"):
             sreq = SummarizeRequest(doc_id=doc_id, chunks=chunks)  # type: ignore[arg-type]
-            result = await _summarize_http(sreq)
+            try:
+                result = await _summarize_http(sreq)
+            except HTTPException:
+                raise
+            except Exception as e:
+                # Catch-all with minimal leak
+                raise HTTPException(
+                    status_code=502, detail=f"Summarize call failed: {e}"
+                )
     else:
         with span("summary.collect_chunks.local", doc_id=doc_id, max_chunks=limit):
             chunks = [c for c in INDEX if getattr(c, "doc_id", None) == doc_id]
