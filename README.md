@@ -4,6 +4,22 @@ A document QA and summarization assistant for educational materials, surfaced th
 
 It is explicitly multilingual, with same-language answers when possible, and the embedding path has an offline deterministic fallback.
 
+<!-- README_SURFACE_START -->
+![Python](https://img.shields.io/badge/Python-Service_Split-3776AB?style=flat-square&logo=python&logoColor=white) ![FastAPI](https://img.shields.io/badge/FastAPI-Gateway-009688?style=flat-square&logo=fastapi&logoColor=white) ![Streamlit](https://img.shields.io/badge/Streamlit-Reader_UI-FF4B4B?style=flat-square&logo=streamlit&logoColor=white)
+
+[![Portfolio Article](https://img.shields.io/badge/Portfolio%20Article-102A43?style=flat-square)](https://adredes-weslee.github.io/ai/rag/document-intelligence/2026/03/24/building-service-oriented-document-intelligence.html) [![Live Demo](https://img.shields.io/badge/Live%20Demo-FF8B2B?style=flat-square)](https://adredes-weslee-intelligent-content-analyzer-uiapp-stwg9a.streamlit.app/)
+## Quickstart
+
+```bash
+copy .env.example .env  # or cp .env.example .env
+docker compose -f infra/docker-compose.yml up --build
+streamlit run ui/app.py
+```
+
+See [Setup and Run](#setup-and-run) for the full environment and verification path.
+
+<!-- README_SURFACE_END -->
+
 ## Why This Repository Exists
 
 - Help students and other readers interrogate lecture notes, PDFs, and mixed-format documents without manual page-by-page searching, while preserving citations and summaries.
