@@ -8,6 +8,20 @@ It is explicitly multilingual, with same-language answers when possible, and the
 ![Python](https://img.shields.io/badge/Python-Service_Split-3776AB?style=flat-square&logo=python&logoColor=white) ![FastAPI](https://img.shields.io/badge/FastAPI-Gateway-009688?style=flat-square&logo=fastapi&logoColor=white) ![Streamlit](https://img.shields.io/badge/Streamlit-Reader_UI-FF4B4B?style=flat-square&logo=streamlit&logoColor=white)
 
 [![Portfolio Article](https://img.shields.io/badge/Portfolio%20Article-102A43?style=flat-square)](https://adredes-weslee.github.io/ai/rag/document-intelligence/2026/03/24/building-service-oriented-document-intelligence.html) [![Live Demo](https://img.shields.io/badge/Live%20Demo-FF8B2B?style=flat-square)](https://adredes-weslee-intelligent-content-analyzer-uiapp-stwg9a.streamlit.app/)
+
+```mermaid
+flowchart LR
+    UI["Streamlit UI<br/>upload + QA + summary"] --> GW["FastAPI API Gateway<br/>orchestration + caching"]
+    GW --> ING["Ingest<br/>readers + chunkers"]
+    ING --> RET["Retrieval<br/>BM25 + dense + FAISS"]
+    GW --> RET
+    RET --> EMB["Embeddings<br/>/embed"]
+    GW --> GEN["LLM Generate"]
+    GW --> EVAL["Evaluation"]
+    GW -. cache .- REDIS[("Redis")]
+    RET -. persist .- STORE[("data/faiss.index<br/>data/doc_map.json")]
+```
+
 ## Quickstart
 
 ```bash
