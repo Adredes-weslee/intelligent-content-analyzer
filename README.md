@@ -34,6 +34,12 @@ See [Setup and Run](#setup-and-run) for the full environment and verification pa
 
 <!-- README_SURFACE_END -->
 
+## Interface Preview
+
+Local UI runs no longer require a Streamlit secrets file just to render the first screen. If `API_URL` is not configured in `.streamlit/secrets.toml` or the environment, the UI now falls back to `http://localhost:8000` and surfaces that clearly in the sidebar.
+
+![Interface preview](docs/screenshots/app-overview.png)
+
 ## Why This Repository Exists
 
 - Help students and other readers interrogate lecture notes, PDFs, and mixed-format documents without manual page-by-page searching, while preserving citations and summaries.

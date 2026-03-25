@@ -5,6 +5,7 @@ import time
 import pandas as pd
 import requests
 import streamlit as st
+from streamlit.errors import StreamlitSecretNotFoundError
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
@@ -52,6 +53,9 @@ for k, v in {
     "restrict_last_doc": True,
     "show_raw": False,
     "show_debug": False,
+    "question": "",
+    "k": 10,
+    "use_rerank": True,
     "use_judge": False,
     "dense_candidates": 50,
     "doc_id": None,
@@ -73,33 +77,45 @@ def _fmt_size(n: int) -> str:
     return f"{n:.1f}PB"
 
 
+def _get_secret(name: str) -> str | None:
+    """Return a Streamlit secret if secrets are configured, else None.
+
+    Local repo runs should not fail just because `.streamlit/secrets.toml`
+    does not exist. Streamlit raises before returning from `.get()` in that
+    case, so guard the lookup centrally and fall back to env/local defaults.
+    """
+    try:
+        return st.secrets.get(name)
+    except (StreamlitSecretNotFoundError, FileNotFoundError, KeyError):
+        return None
+
+
 # ---- Sidebar ----
 st.sidebar.header("Settings")
 default_api = (
-    st.secrets.get("API_URL")
+    _get_secret("API_URL")
     or os.environ.get("API_URL")
     or st.session_state.get("api_url", "http://localhost:8000")
 )
 if "api_url" not in st.session_state:
     st.session_state["api_url"] = default_api
 
-API_URL = st.sidebar.text_input("API URL", key="api_url", value=default_api)
+API_URL = st.sidebar.text_input("API URL", key="api_url")
+if not _get_secret("API_URL") and not os.environ.get("API_URL"):
+    st.sidebar.caption("Local mode: using the default gateway URL until API_URL is configured.")
 restrict_to_last_doc = st.sidebar.checkbox(
     "Restrict questions to last uploaded doc",
     key="restrict_last_doc",
-    value=st.session_state["restrict_last_doc"],
     help="Only search chunks from the most recently uploaded document. Disables cross-document retrieval.",
 )
 show_raw = st.sidebar.checkbox(
     "Show raw JSON (debug)",
     key="show_raw",
-    value=st.session_state["show_raw"],
     help="Display the raw API response for debugging.",
 )
 show_debug = st.sidebar.checkbox(
     "Show diagnostics (collapsible)",
     key="show_debug",
-    value=st.session_state["show_debug"],
     help="Show retrieval and scoring diagnostics inside a collapsed panel.",
 )
 
@@ -348,7 +364,6 @@ with st.form("qa_form", clear_on_submit=False):
         question = st.text_input(
             "Question",
             key="question",
-            value=st.session_state.get("question", ""),
             placeholder="Ask something about your document...",
         )
     with col_q2:
@@ -356,7 +371,6 @@ with st.form("qa_form", clear_on_submit=False):
             "Top-K Chunks",
             min_value=1,
             max_value=20,
-            value=int(st.session_state.get("k", 10)),
             step=1,
             key="k",
             help="How many chunks to return after fusion/reranking.",
@@ -364,14 +378,12 @@ with st.form("qa_form", clear_on_submit=False):
     with col_q3:
         use_rerank = st.checkbox(
             "Use Reranker",
-            value=bool(st.session_state.get("use_rerank", True)),
             key="use_rerank",
             help="Apply a cross-encoder to reorder fused candidates. Improves accuracy, adds latency.",
         )
     with col_q4:
         use_judge = st.checkbox(
             "Use LLM Judge",
-            value=bool(st.session_state.get("use_judge", False)),
             key="use_judge",
             help="Call an LLM to grade the answer and boost confidence. Improves reliability, adds latency.",
         )
@@ -382,7 +394,6 @@ with st.form("qa_form", clear_on_submit=False):
             min_value=10,
             max_value=500,
             step=10,
-            value=int(st.session_state.get("dense_candidates", 50)),
             key="dense_candidates",
             help="Number of top results pulled from the vector index before fusion. Higher = better recall, slower.",
         )
