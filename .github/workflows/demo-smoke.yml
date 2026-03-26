@@ -37,6 +37,7 @@ jobs:
         run: |
           @'
           import os
+          import shutil
           import subprocess
           import sys
           import time
@@ -45,10 +46,11 @@ jobs:
 
           entry = os.environ["STREAMLIT_APP_PATH"]
           log_path = Path("streamlit-smoke.log")
+          streamlit_cmd = shutil.which("streamlit") or shutil.which("streamlit.exe")
+          if not streamlit_cmd:
+              raise SystemExit("Streamlit executable not found on PATH")
           cmd = [
-              sys.executable,
-              "-m",
-              "streamlit",
+              streamlit_cmd,
               "run",
               entry,
               "--server.headless=true",
