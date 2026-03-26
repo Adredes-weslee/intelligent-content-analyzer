@@ -48,7 +48,7 @@ jobs:
           cmd = [
               sys.executable,
               "-m",
-              "streamlit.web.cli",
+              "streamlit",
               "run",
               entry,
               "--server.headless=true",
