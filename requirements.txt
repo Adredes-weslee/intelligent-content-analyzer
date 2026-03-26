@@ -4,11 +4,11 @@ uvicorn==0.35.0
 pydantic==2.11.4
 pydantic-settings==2.5.2
 httpx==0.28.1
-python-multipart==0.0.20
+python-multipart==0.0.22
 redis==5.0.8
 numpy==1.26.4
 faiss-cpu==1.9.0
-torch==2.5.1
+torch==2.7.1+cpu
 torchvision==0.20.1
 torchaudio==2.5.1
 sentence-transformers==3.2.1
@@ -20,7 +20,7 @@ python-pptx==1.0.2
 beautifulsoup4==4.12.3
 html5lib==1.1
 markdown-it-py==3.0.0
-Pillow==10.4.0
+Pillow==12.1.1
 langdetect==1.0.9
 google-generativeai==0.8.5
 langfuse==3.3.4
