@@ -1,0 +1,96 @@
+name: Demo Smoke Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: demo-smoke-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    runs-on: windows-latest
+    timeout-minutes: 35
+    env:
+      STREAMLIT_APP_PATH: ui/app.py
+      PYTHONUNBUFFERED: "1"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install -r requirements.txt
+
+      - name: Smoke test Streamlit UI shell
+        shell: pwsh
+        run: |
+          @'
+          import os
+          import subprocess
+          import sys
+          import time
+          import urllib.request
+          from pathlib import Path
+
+          entry = os.environ["STREAMLIT_APP_PATH"]
+          log_path = Path("streamlit-smoke.log")
+          cmd = [
+              sys.executable,
+              "-m",
+              "streamlit.web.cli",
+              "run",
+              entry,
+              "--server.headless=true",
+              "--server.port=8501",
+              "--browser.gatherUsageStats=false",
+          ]
+
+          ok = False
+          with log_path.open("w", encoding="utf-8") as log:
+              proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, text=True)
+              try:
+                  deadline = time.time() + 240
+                  health = "http://127.0.0.1:8501/_stcore/health"
+                  while time.time() < deadline:
+                      if proc.poll() is not None:
+                          break
+                      try:
+                          with urllib.request.urlopen(health, timeout=2) as resp:
+                              if resp.status == 200:
+                                  ok = True
+                                  break
+                      except Exception:
+                          pass
+                      time.sleep(2)
+              finally:
+                  if proc.poll() is None:
+                      proc.terminate()
+                      try:
+                          proc.wait(timeout=10)
+                      except subprocess.TimeoutExpired:
+                          proc.kill()
+
+          if not ok:
+              print(log_path.read_text(encoding="utf-8", errors="replace"))
+              raise SystemExit("Streamlit smoke test failed")
+
+          print(f"Smoke test passed for {entry}")
+          '@ | python -
+
+      - name: Upload smoke log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: streamlit-smoke-log
+          path: streamlit-smoke.log
